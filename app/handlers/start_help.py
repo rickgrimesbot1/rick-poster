@@ -8,9 +8,16 @@ from app.state import track_user
 
 logger = logging.getLogger(__name__)
 
+def _maybe_dev_kb():
+    # Only add button if DEV_LINK is a valid http(s) URL
+    if DEV_LINK and DEV_LINK.startswith(("http://", "https://")):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🤓 Bot Developer", url=DEV_LINK)]])
+    return None
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
+
     user = update.effective_user
     name = html.escape(user.first_name or "User")
     text = (
@@ -22,18 +29,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>➥ Details: /help</b>\n\n"
         "<b>╰── ⋅ ⋅ ── ✩ ── ⋅ ⋅ ──╯</b>"
     )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤓 Bot Developer", url=DEV_LINK)]])
+    kb = _maybe_dev_kb()
+
     if START_PHOTO_URL:
         try:
-            await update.message.reply_photo(photo=START_PHOTO_URL, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await update.message.reply_photo(
+                photo=START_PHOTO_URL,
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb if kb else None,
+            )
             return
         except Exception as e:
             logger.warning(f"/start photo failed: {e}")
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb if kb else None,
+    )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
+
     text = (
         "<b>🤖 GDFlix TMDB Bot – HELP MENU</b>\n\n"
         "<b>🟢 BASIC COMMANDS</b>\n"
@@ -52,11 +71,23 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>━━━━━━━━━━━━━━━━━━</b>\n"
         "<b>➥ Developed By: <a href='https://t.me/J1_CHANG_WOOK'>J1_CHANG_WOOK</a></b>"
     )
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🤓 Bot Developer", url=DEV_LINK)]])
+
+    kb = _maybe_dev_kb()
+
     if HELP_PHOTO_URL:
         try:
-            await update.message.reply_photo(photo=HELP_PHOTO_URL, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await update.message.reply_photo(
+                photo=HELP_PHOTO_URL,
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb if kb else None,
+            )
             return
         except Exception as e:
             logger.warning(f"/help photo failed: {e}")
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb if kb else None,
+    )
