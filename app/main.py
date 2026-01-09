@@ -3,7 +3,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, filters
 )
 from app.config import TELEGRAM_BOT_TOKEN
-from app.handlers import start_help, core, streaming, ucer, admin, posters_ui
+from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart
 from app.state import load_state
 
 def setup_logging():
@@ -71,8 +71,12 @@ def main():
     # Posters UI
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=True))
 
-    # NEW: /rk
-    app.add_handler(CommandHandler("rk", streaming.rk, block=True))
+    # Restart (owner only)
+    app.add_handler(CommandHandler("restart", restart.restart_cmd, block=True))
+    app.add_handler(CallbackQueryHandler(restart.restart_cb, pattern="^restart:"))
+
+    # Announce after restart if needed
+    restart.schedule_restart_announce(app)
 
     print("Bot running...")
     app.run_polling()
