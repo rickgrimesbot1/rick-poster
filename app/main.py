@@ -70,6 +70,7 @@ def main():
 
     # Posters UI
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=True))
+    app.add_handler(CallbackQueryHandler(posters_ui.posters_cb, pattern="^poster:"))
 
     # Restart + whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=True))
