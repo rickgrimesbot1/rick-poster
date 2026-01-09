@@ -59,24 +59,26 @@ async def restart_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         asyncio.create_task(_delayed_exit())
 
-# Job: announce after restart (scheduled from main)
-async def _announce_restart_job(context: ContextTypes.DEFAULT_TYPE):
-    pr = PENDING_RESTART
-    if not pr or not pr.get("chat_id"):
-        return
-    chat_id = int(pr["chat_id"])
+def _build_restart_message() -> str:
     now = datetime.now().astimezone()
     date_str = now.strftime("%Y-%m-%d")
     time_str = now.strftime("%H:%M:%S")
     tzname = now.tzname() or "UTC"
-
-    message = (
+    return (
         f"<b>⌬ Restarted Successfully!</b>\n"
         f"<b>┟ Date: {date_str}</b>\n"
         f"<b>┠ Time: {time_str}</b>\n"
         f"<b>┠ TimeZone: {tzname}</b>\n"
         f"<b>┖ Version: RickV1</b>"
     )
+
+# JobQueue path (if available)
+async def _announce_restart_job(context: ContextTypes.DEFAULT_TYPE):
+    pr = PENDING_RESTART
+    if not pr or not pr.get("chat_id"):
+        return
+    chat_id = int(pr["chat_id"])
+    message = _build_restart_message()
     try:
         await context.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.HTML)
     except Exception:
@@ -84,6 +86,28 @@ async def _announce_restart_job(context: ContextTypes.DEFAULT_TYPE):
     finally:
         clear_pending_restart()
 
+# Fallback path (no JobQueue)
+async def _announce_restart_direct(bot):
+    pr = PENDING_RESTART
+    if not pr or not pr.get("chat_id"):
+        return
+    chat_id = int(pr["chat_id"])
+    message = _build_restart_message()
+    try:
+        await bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    finally:
+        clear_pending_restart()
+
 def schedule_restart_announce(application):
-    # Schedule the announce job shortly after app starts
-    application.job_queue.run_once(_announce_restart_job, when=1.0)
+    jq = getattr(application, "job_queue", None)
+    if jq is not None:
+        # Use JobQueue if installed
+        jq.run_once(_announce_restart_job, when=1.0)
+    else:
+        # Fallback: schedule an asyncio task after 1s
+        async def _delay_and_send():
+            await asyncio.sleep(1.0)
+            await _announce_restart_direct(application.bot)
+        application.create_task(_delay_and_send())
