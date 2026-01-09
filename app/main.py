@@ -3,7 +3,7 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 )
 from app.config import TELEGRAM_BOT_TOKEN
-from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart
+from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart, bs
 from app.state import load_state
 
 def setup_logging():
@@ -71,6 +71,11 @@ def main():
     # Posters UI (type + language selection)
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=True))
     app.add_handler(CallbackQueryHandler(posters_ui.posters_cb, pattern="^poster:", block=True))
+
+    # Bot settings (/bs) — owner-only interactive env manager
+    app.add_handler(CommandHandler("bs", bs.bs_cmd, block=True))
+    app.add_handler(CallbackQueryHandler(bs.bs_cb, pattern="^bs:", block=True))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bs.bs_text))
 
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=True))
