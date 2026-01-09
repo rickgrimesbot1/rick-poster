@@ -1,6 +1,6 @@
 import logging
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, filters
+    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 )
 from app.config import TELEGRAM_BOT_TOKEN
 from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart
@@ -20,10 +20,7 @@ def main():
         print("Set TELEGRAM_BOT_TOKEN env first!")
         return
 
-    builder = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN)
-    # Ensure restart announce is scheduled after init
-    restart.attach_post_init(builder)
-    app = builder.build()
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Basic
     app.add_handler(CommandHandler("start", start_help.start, block=True))
@@ -74,7 +71,7 @@ def main():
     # Posters UI
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=True))
 
-    # Restart (owner only) + whoami
+    # Restart + whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=True))
     app.add_handler(CommandHandler("restart", restart.restart_cmd, block=True))
     app.add_handler(CallbackQueryHandler(restart.restart_cb, pattern="^restart:"))
