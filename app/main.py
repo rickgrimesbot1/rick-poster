@@ -20,7 +20,10 @@ def main():
         print("Set TELEGRAM_BOT_TOKEN env first!")
         return
 
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    builder = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN)
+    # Attach restart post_init hook BEFORE build (so it runs with a running loop)
+    restart.attach_post_init(builder)
+    app = builder.build()
 
     # Basic
     app.add_handler(CommandHandler("start", start_help.start, block=True))
@@ -74,9 +77,6 @@ def main():
     # Restart (owner only)
     app.add_handler(CommandHandler("restart", restart.restart_cmd, block=True))
     app.add_handler(CallbackQueryHandler(restart.restart_cb, pattern="^restart:"))
-
-    # Announce after restart if needed
-    restart.schedule_restart_announce(app)
 
     print("Bot running...")
     app.run_polling()
