@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import threading
+import time
 from typing import Dict, Any, Set, List
 import requests
 from app.config import STATE_REMOTE_URL
@@ -17,6 +18,9 @@ ALLOWED_USERS: List[int] = []
 AUTHORIZED_CHATS: Set[int] = set()
 UCER_SETTINGS: Dict[int, Dict[str, Any]] = {}
 
+# NEW: pending restart notify target
+PENDING_RESTART: Dict[str, Any] | None = None
+
 def track_user(user_id: int):
     try:
         BOT_STATS["users"].add(user_id)
@@ -24,7 +28,7 @@ def track_user(user_id: int):
         pass
 
 def _apply_state_dict(data: dict):
-    global UCER_SETTINGS, ALLOWED_USERS, AUTHORIZED_CHATS
+    global UCER_SETTINGS, ALLOWED_USERS, AUTHORIZED_CHATS, PENDING_RESTART
     try:
         UCER_SETTINGS = {int(k): v for k, v in (data.get("ucer_settings") or {}).items()}
         for uid, cfg in UCER_SETTINGS.items():
@@ -40,7 +44,18 @@ def _apply_state_dict(data: dict):
 
         ALLOWED_USERS = [int(x) for x in (data.get("allowed_users") or [])]
         AUTHORIZED_CHATS = set(int(x) for x in (data.get("authorized_chats") or []))
-        logger.info(f"State applied: users={len(ALLOWED_USERS)} groups={len(AUTHORIZED_CHATS)} ucer={len(UCER_SETTINGS)}")
+
+        pr = data.get("pending_restart")
+        if isinstance(pr, dict) and pr.get("chat_id"):
+            try:
+                pr["chat_id"] = int(pr["chat_id"])
+            except Exception:
+                pass
+            PENDING_RESTART = pr
+        else:
+            PENDING_RESTART = None
+
+        logger.info(f"State applied: users={len(ALLOWED_USERS)} groups={len(AUTHORIZED_CHATS)} ucer={len(UCER_SETTINGS)} pending_restart={'yes' if PENDING_RESTART else 'no'}")
     except Exception as e:
         logger.warning(f"Failed to apply state: {e}")
 
@@ -96,6 +111,7 @@ def save_state():
                 "ucer_settings": UCER_SETTINGS,
                 "allowed_users": ALLOWED_USERS,
                 "authorized_chats": list(AUTHORIZED_CHATS),
+                "pending_restart": PENDING_RESTART,
             }
             try:
                 with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -106,3 +122,14 @@ def save_state():
             _save_state_remote(data)
     except Exception as e:
         logger.warning(f"Failed to save state: {e}")
+
+# NEW helpers for restart
+def mark_pending_restart(chat_id: int):
+    global PENDING_RESTART
+    PENDING_RESTART = {"chat_id": int(chat_id), "ts": int(time.time())}
+    save_state()
+
+def clear_pending_restart():
+    global PENDING_RESTART
+    PENDING_RESTART = None
+    save_state()
