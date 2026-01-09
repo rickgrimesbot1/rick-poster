@@ -30,10 +30,13 @@ STREAM_APIS = {
 
 async def generic_stream(update: Update, context: ContextTypes.DEFAULT_TYPE, label_landscape: str, label_portrait: str, base_api: str):
     track_user(update.effective_user.id)
-    url = " ".join(context.args)
+    url = " ".join(context.args) if context.args else ""
     if not url:
-        await update.message.reply_text(f"Usage:\n/{context.command.command} <url>")
+        # PTB v21: context.command not available; derive command from incoming text
+        cmd_text = (update.effective_message.text or "").split()[0] or "/command"
+        await update.message.reply_text(f"Usage:\n{cmd_text} <url>")
         return
+
     encoded = urllib.parse.quote_plus(url)
     api = base_api.format(encoded=encoded)
     msg = await update.message.reply_text("🔍 Fetching...")
@@ -80,7 +83,7 @@ async def tk(update, context):    await generic_stream(update, context, "TentKot
 
 async def nf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user(update.effective_user.id)
-    raw = " ".join(context.args).strip()
+    raw = " ".join(context.args).strip() if context.args else ""
     if not raw:
         await update.message.reply_text("Usage:\n/nf <netflix url or id>")
         return
