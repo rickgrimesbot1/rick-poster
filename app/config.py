@@ -1,5 +1,13 @@
 import os
 
+try:
+    from dotenv import load_dotenv, find_dotenv
+   
+    load_dotenv(find_dotenv(usecwd=True), override=False)
+except Exception:
+    ം
+    pass
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 OWNER_ID = int(os.getenv("OWNER_ID", "0") or "0")
 
