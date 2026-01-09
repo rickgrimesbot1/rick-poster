@@ -2,12 +2,14 @@ import html
 import re
 import urllib.parse
 import requests
+from io import BytesIO
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from app.config import NETFLIX_API
 from app.state import track_user
+from app.utils import download_bytes, ensure_line_bold
 
 STREAM_APIS = {
     "primevideo.com": "https://amzn.rickheroko.workers.dev/?url={encoded}",
@@ -121,3 +123,86 @@ async def nf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b><blockquote>Powered By: <a href='https://t.me/ott_posters_club'>Ott Posters Club 🎞️</a></blockquote></b>"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+
+# NEW: /rk — reply-based poster resend with same caption
+async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    track_user(update.effective_user.id)
+    msg = update.message
+
+    # Must be used as reply
+    if not msg.reply_to_message:
+        await msg.reply_text("❌ /rk must be used as a reply to a previous captioned message")
+        return
+
+    if not context.args:
+        await msg.reply_text("❌ Usage:\n/rk <streaming url>")
+        return
+
+    stream_url = context.args[0].strip()
+    # Base caption from replied message
+    base_caption = msg.reply_to_message.caption or msg.reply_to_message.text
+    if not base_caption:
+        await msg.reply_text("❌ Replied message has no caption")
+        return
+
+    # Full boldify (normalize ' - [' to ' [')
+    bold_lines = []
+    for line in base_caption.splitlines():
+        s = re.sub(r"\s*-\s*\[", " [", line)
+        bold_lines.append(ensure_line_bold(s) if s.strip() else "")
+    final_caption = "\n".join(bold_lines)
+
+    # Detect platform → API
+    encoded = urllib.parse.quote_plus(stream_url)
+    api_url = None
+    for key, templ in STREAM_APIS.items():
+        if key in stream_url:
+            api_url = templ.format(encoded=encoded)
+            break
+    # Netflix direct id/url special case
+    if not api_url and ("netflix.com" in stream_url or re.fullmatch(r"\d{6,}", stream_url)):
+        # Allow `/rk 12345678`
+        movie_id = None
+        m = re.search(r"/title/(\d+)", stream_url)
+        if m:
+            movie_id = m.group(1)
+        elif re.fullmatch(r"\d+", stream_url):
+            movie_id = stream_url
+        if movie_id:
+            api_url = f"{NETFLIX_API}{movie_id}"
+
+    if not api_url:
+        await msg.reply_text("❌ Unsupported or unknown streaming platform URL")
+        return
+
+    status = await msg.reply_text("🔍 Fetching streaming poster...")
+
+    try:
+        r = requests.get(api_url, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        await status.edit_text(f"❌ API error\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        return
+
+    # Landscape poster only
+    landscape = data.get("landscape") or data.get("backdrop") or data.get("horizontal") or data.get("cover")
+    if not landscape:
+        await status.edit_text("❌ Landscape poster not found")
+        return
+
+    poster_bytes = download_bytes(landscape)
+    if not poster_bytes:
+        await status.edit_text("❌ Poster download failed")
+        return
+
+    bio = BytesIO(poster_bytes)
+    bio.name = "streaming_landscape.jpg"
+
+    try:
+        await status.delete()
+    except Exception:
+        pass
+
+    # Send to the replied message thread with the SAME caption
+    await msg.reply_to_message.reply_photo(photo=bio, caption=final_caption, parse_mode=ParseMode.HTML)
