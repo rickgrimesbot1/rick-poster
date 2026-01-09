@@ -72,21 +72,6 @@ def _build_restart_message() -> str:
         f"<b>┖ Version: RickV1</b>"
     )
 
-# JobQueue path (if available)
-async def _announce_restart_job(context: ContextTypes.DEFAULT_TYPE):
-    pr = PENDING_RESTART
-    if not pr or not pr.get("chat_id"):
-        return
-    chat_id = int(pr["chat_id"])
-    message = _build_restart_message()
-    try:
-        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
-    finally:
-        clear_pending_restart()
-
-# Fallback path (no JobQueue)
 async def _announce_restart_direct(bot):
     pr = PENDING_RESTART
     if not pr or not pr.get("chat_id"):
@@ -95,19 +80,16 @@ async def _announce_restart_direct(bot):
     message = _build_restart_message()
     try:
         await bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.HTML)
-    except Exception:
-        pass
     finally:
         clear_pending_restart()
 
-def schedule_restart_announce(application):
-    jq = getattr(application, "job_queue", None)
-    if jq is not None:
-        # Use JobQueue if installed
-        jq.run_once(_announce_restart_job, when=1.0)
-    else:
-        # Fallback: schedule an asyncio task after 1s
+# Attach a post_init hook so we schedule the announce after the loop is running
+def attach_post_init(builder):
+    async def _post_init(app):
+        # Schedule after a short delay once the app is initialized and loop is running
         async def _delay_and_send():
             await asyncio.sleep(1.0)
-            await _announce_restart_direct(application.bot)
-        application.create_task(_delay_and_send())
+            await _announce_restart_direct(app.bot)
+        # Use app.create_task to tie to PTB's loop
+        app.create_task(_delay_and_send())
+    builder.post_init(_post_init)
