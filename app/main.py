@@ -71,6 +71,9 @@ def main():
     # Posters UI
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=True))
 
+    # NEW: /rk
+    app.add_handler(CommandHandler("rk", streaming.rk, block=True))
+
     print("Bot running...")
     app.run_polling()
 
