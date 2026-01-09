@@ -1,11 +1,10 @@
 import os
 
+# Optional .env auto-load for local/dev. In production (Heroku), Config Vars take precedence.
 try:
     from dotenv import load_dotenv, find_dotenv
-   
     load_dotenv(find_dotenv(usecwd=True), override=False)
 except Exception:
-    ം
     pass
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
