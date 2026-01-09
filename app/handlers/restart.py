@@ -1,5 +1,6 @@
 import os
 import asyncio
+from threading import Timer
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -7,16 +8,25 @@ from telegram.ext import ContextTypes
 from app.config import OWNER_ID
 from app.state import mark_pending_restart, clear_pending_restart, PENDING_RESTART
 
+# Utility: owner check helper
+def _is_owner(user_id: int | None) -> bool:
+    return bool(user_id) and int(user_id) == int(OWNER_ID or 0)
+
+# /whoami — show your Telegram user id (to set OWNER_ID correctly)
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user:
+        return
+    await update.message.reply_text(f"Your Telegram user id: {user.id}")
+
 # /restart command (owner only)
 async def restart_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if not user or user.id != OWNER_ID:
+    if not user or not _is_owner(user.id):
         return
     kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Yes", callback_data="restart:yes"),
-            InlineKeyboardButton("No", callback_data="restart:no"),
-        ]
+        [InlineKeyboardButton("Yes", callback_data="restart:yes"),
+         InlineKeyboardButton("No", callback_data="restart:no")]
     ])
     await update.message.reply_text("Are you really sure you want to restart the bot ?", reply_markup=kb)
 
@@ -25,7 +35,7 @@ async def restart_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     user = q.from_user
-    if not user or user.id != OWNER_ID:
+    if not user or not _is_owner(user.id):
         try:
             await q.message.delete()
         except Exception:
@@ -52,12 +62,11 @@ async def restart_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id = q.message.chat.id
         mark_pending_restart(chat_id)
 
-        # Give Telegram a moment to send the message, then exit
-        async def _delayed_exit():
-            await asyncio.sleep(1.0)
+        # Use a threads-based timer to exit regardless of event loop state
+        def _hard_exit():
             os._exit(0)
 
-        asyncio.create_task(_delayed_exit())
+        Timer(1.0, _hard_exit).start()
 
 def _build_restart_message() -> str:
     now = datetime.now().astimezone()
@@ -86,10 +95,8 @@ async def _announce_restart_direct(bot):
 # Attach a post_init hook so we schedule the announce after the loop is running
 def attach_post_init(builder):
     async def _post_init(app):
-        # Schedule after a short delay once the app is initialized and loop is running
         async def _delay_and_send():
             await asyncio.sleep(1.0)
             await _announce_restart_direct(app.bot)
-        # Use app.create_task to tie to PTB's loop
         app.create_task(_delay_and_send())
     builder.post_init(_post_init)
