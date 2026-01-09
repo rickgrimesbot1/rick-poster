@@ -46,7 +46,8 @@ def get_text_from_url_or_path(url: str) -> Optional[str]:
                 downloaded = 0
                 limit = 50 * 1024 * 1024
                 for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if not chunk: break
+                    if not chunk:
+                        break
                     f.write(chunk)
                     downloaded += len(chunk)
                     if downloaded >= limit:
@@ -60,12 +61,15 @@ def get_text_from_url_or_path(url: str) -> Optional[str]:
         return None
     finally:
         if temp_path and os.path.exists(temp_path):
-            try: os.remove(temp_path)
-            except Exception: pass
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
 
 def parse_audio_block(TEXT: str, ucer_format: bool) -> Tuple[str, Optional[str]]:
     if not TEXT:
         return "", None
+
     blocks = TEXT.split("\n\n")
     output = []
     raw_blocks = []
@@ -97,7 +101,8 @@ def parse_audio_block(TEXT: str, ucer_format: bool) -> Tuple[str, Optional[str]]
                         break
             if not bitrate:
                 cand = _extract_bitrate_from_string(raw)
-                if cand: bitrate = cand
+                if cand:
+                    bitrate = cand
 
             lang = d.get("Language", "")
             fmt = d.get("Commercial name") or d.get("Format") or ""
@@ -128,19 +133,22 @@ def parse_audio_block(TEXT: str, ucer_format: bool) -> Tuple[str, Optional[str]]
             if a["ID"] == 1 and a["LANGUAGE"]:
                 org_aud = a["LANGUAGE"]
             line = f"{a['ID']}. {a['LANGUAGE']} "
-            if a.get("CODEC"): line += f"| {a['CODEC']} "
-            if a.get("CHANNELS"): line += f"{a['CHANNELS']} "
-            if a.get("BITRATE'): line += f\"@ {a['BITRATE']}\"
-            lines.append(f\"<b>{line.strip()}</b>\")
-        return \"\\n\".join(lines), org_aud
+            if a.get("CODEC"):
+                line += f"| {a['CODEC']} "
+            if a.get("CHANNELS"):
+                line += f"{a['CHANNELS']} "
+            if a.get("BITRATE"):
+                line += f"@ {a['BITRATE']}"
+            lines.append(f"<b>{line.strip()}</b>")
+        return "\n".join(lines), org_aud
 
     # UCER format
     rows = []
     for a in audios:
-        if a[\"ID\"] == 1 and a.get(\"LANGUAGE\"):
-            org_aud = a[\"LANGUAGE\"]
-        br = (a.get(\"BITRATE\") or \"\").replace(\"kb/s\", \" kb/s\").replace(\"Kb/s\", \" kb/s\")
-        parts = [p for p in [a.get(\"CODEC\"), a.get(\"CHANNELS\"), br, a.get(\"LANGUAGE\")] if p]
-        rows.append(\" | \".join(parts))
-    block = \"🔈 <b>Audio Tracks:</b>\\n<b><blockquote>\" + \"\\n\".join(rows) + \"</blockquote></b>\"
+        if a["ID"] == 1 and a.get("LANGUAGE"):
+            org_aud = a["LANGUAGE"]
+        br = (a.get("BITRATE") or "").replace("kb/s", " kb/s").replace("Kb/s", " kb/s")
+        parts = [p for p in [a.get("CODEC"), a.get("CHANNELS"), br, a.get("LANGUAGE")] if p]
+        rows.append(" | ".join(parts))
+    block = "🔈 <b>Audio Tracks:</b>\n<b><blockquote>" + "\n".join(rows) + "</blockquote></b>"
     return block, org_aud
