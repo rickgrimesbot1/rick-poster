@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from typing import Tuple, Optional
@@ -34,6 +35,29 @@ def _map_codec_name(raw: str) -> str:
         return "AAC"
     return raw.strip()
 
+def _resolve_mediainfo_bin() -> Optional[str]:
+    # Try current PATH first
+    path = shutil.which("mediainfo")
+    if path:
+        return path
+
+    # Common Heroku apt buildpack locations
+    candidates = [
+        "/app/.apt/usr/bin/mediainfo",
+        "/app/.apt/bin/mediainfo",
+        "/usr/bin/mediainfo",
+        "/usr/local/bin/mediainfo",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+
+    # Try augmenting PATH (Heroku apt buildpack usually adds these already)
+    extra = "/app/.apt/usr/bin:/app/.apt/bin"
+    os.environ["PATH"] = f"{extra}:{os.environ.get('PATH', '')}"
+    path = shutil.which("mediainfo")
+    return path
+
 def get_text_from_url_or_path(url: str) -> Optional[str]:
     temp_path = None
     target = url
@@ -54,7 +78,12 @@ def get_text_from_url_or_path(url: str) -> Optional[str]:
                         break
             target = temp_path
 
-        out = subprocess.check_output(["mediainfo", target], stderr=subprocess.STDOUT)
+        bin_path = _resolve_mediainfo_bin()
+        if not bin_path:
+            logger.warning("mediainfo not found on PATH and known locations.")
+            return None
+
+        out = subprocess.check_output([bin_path, target], stderr=subprocess.STDOUT)
         return out.decode("utf-8", errors="ignore")
     except Exception as e:
         logger.warning(f"mediainfo failed: {e}")
