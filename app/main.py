@@ -21,7 +21,7 @@ def main():
         return
 
     builder = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN)
-    # Attach restart post_init hook BEFORE build (so it runs with a running loop)
+    # Ensure restart announce is scheduled after init
     restart.attach_post_init(builder)
     app = builder.build()
 
@@ -74,7 +74,8 @@ def main():
     # Posters UI
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=True))
 
-    # Restart (owner only)
+    # Restart (owner only) + whoami
+    app.add_handler(CommandHandler("whoami", restart.whoami, block=True))
     app.add_handler(CommandHandler("restart", restart.restart_cmd, block=True))
     app.add_handler(CallbackQueryHandler(restart.restart_cb, pattern="^restart:"))
 
