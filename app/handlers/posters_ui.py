@@ -20,14 +20,11 @@ def _lang_label(code: Optional[str]) -> str:
     code = code.lower()
     name = LANG_MAP.get(code)
     if name:
-        return f"{name} ({code})"
+        return f"{name}"
     return code.upper()
 
 def _tmdb_details(tmdb_id: str) -> Tuple[str, str, str]:
-    """
-    Returns (ctype, title, year) where ctype is 'movie' or 'tv'.
-    Tries movie first, then tv.
-    """
+    """Return (ctype, title, year) where ctype is 'movie' or 'tv'. Try movie first, then tv."""
     # Movie
     try:
         r = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}",
@@ -53,14 +50,14 @@ def _tmdb_details(tmdb_id: str) -> Tuple[str, str, str]:
     return "movie", "Unknown", "????"
 
 def _tmdb_images(tmdb_id: str, ctype: str) -> Dict[str, List[dict]]:
-    """
-    Fetch images for the given id and content type.
-    Returns dict with keys 'backdrops' and 'posters'.
-    """
+    """Fetch images for the given id and content type. Returns dict with keys 'backdrops' and 'posters'."""
     data = {"backdrops": [], "posters": []}
     try:
-        r = requests.get(f"https://api.themoviedb.org/3/{ctype}/{tmdb_id}/images",
-                         params={"api_key": TMDB_API_KEY, "include_image_language": "en,null"}, timeout=10)
+        r = requests.get(
+            f"https://api.themoviedb.org/3/{ctype}/{tmdb_id}/images",
+            params={"api_key": TMDB_API_KEY, "include_image_language": "en,null"},
+            timeout=10,
+        )
         if r.status_code == 200:
             js = r.json() or {}
             data["backdrops"] = js.get("backdrops") or []
@@ -70,41 +67,34 @@ def _tmdb_images(tmdb_id: str, ctype: str) -> Dict[str, List[dict]]:
     return data
 
 def _build_language_keyboard(items: List[dict], ctype: str, tmdb_id: str, imgtype: str) -> InlineKeyboardMarkup:
-    """
-    Build a language selection keyboard from images list.
-    Always include 'No Language' button.
-    """
-    # Count languages
-    counts: Dict[str, int] = {}
+    """Build language selection keyboard. Always include 'No Language' button."""
+    # Unique language codes in items
+    codes: List[str] = []
+    have_none = False
     for it in items:
         code = it.get("iso_639_1")
         if not code or code in ("", "xx"):
-            code_key = "none"
+            have_none = True
         else:
-            code_key = code.lower()
-        counts[code_key] = counts.get(code_key, 0) + 1
+            code = code.lower()
+            if code not in codes:
+                codes.append(code)
 
-    # Ensure 'none' button exists even if not present
-    if "none" not in counts:
-        counts["none"] = 0
-
-    # Sort: put 'none' first, then alphabetically
-    keys = [k for k in counts.keys() if k != "none"]
-    keys.sort()
-    ordered = ["none"] + keys
-
+    # Order: No Language first, then alphabetically
     buttons: List[List[InlineKeyboardButton]] = []
     row: List[InlineKeyboardButton] = []
 
-    for k in ordered:
-        label = _lang_label(None if k == "none" else k)
-        if counts.get(k):
-            label = f"{label} ({counts[k]})"
-        cb = f"poster:lang:{ctype}:{tmdb_id}:{imgtype}:{k}"
+    # Always include No Language button
+    row.append(InlineKeyboardButton("No Language", callback_data=f"poster:lang:{ctype}:{tmdb_id}:{imgtype}:none"))
+    if len(row) == 2:
+        buttons.append(row); row = []
+
+    for code in sorted(codes):
+        label = _lang_label(code)
+        cb = f"poster:lang:{ctype}:{tmdb_id}:{imgtype}:{code}"
         row.append(InlineKeyboardButton(label, callback_data=cb))
         if len(row) == 2:
-            buttons.append(row)
-            row = []
+            buttons.append(row); row = []
     if row:
         buttons.append(row)
 
@@ -145,7 +135,7 @@ async def posters_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
         buttons.append([InlineKeyboardButton(f"{title} ({year})", callback_data=f"poster:select:{mid}")])
     buttons.append([InlineKeyboardButton("❌ Close", callback_data="poster:close")])
-    await update.message.reply_text("Select a Movie 👇", reply_markup=InlineKeyboardMarkup(buttons))
+    await update.message.reply_text("Search Results :", reply_markup=InlineKeyboardMarkup(buttons))
 
 async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -164,7 +154,7 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("poster:select:"):
         tmdb_id = data.split(":", 2)[2]
         ctype, title, year = _tmdb_details(tmdb_id)
-        caption = f"Selected: <b>{html.escape(title)} ({html.escape(year)})</b>\nChoose image type:"
+        caption = f"<b>{html.escape(title)} ({html.escape(year)})</b>\n\n<b>Choose image type:</b>"
         kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("Landscape", callback_data=f"poster:type:{ctype}:{tmdb_id}:backdrop"),
@@ -182,10 +172,9 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Step 2: user chose type — list languages
-    # Either: poster:type:<ctype>:<id>:backdrop|poster
+    # poster:type:<ctype>:<id>:backdrop|poster|menu
     if data.startswith("poster:type:"):
         parts = data.split(":")
-        # poster:type:<ctype>:<id>:<imgtype or 'menu'>
         if len(parts) < 5:
             return
         ctype = parts[2]
@@ -193,7 +182,6 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         imgtype = parts[4]
 
         if imgtype == "menu":
-            # When coming back from language selection, show type menu again
             _, title, year = _tmdb_details(tmdb_id)
             kb = InlineKeyboardMarkup([
                 [
@@ -203,11 +191,8 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("❌ Close", callback_data="poster:close")],
             ])
             try:
-                await q.message.edit_text(
-                    f"Selected: <b>{html.escape(title)} ({html.escape(year)})</b>\nChoose image type:",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb
-                )
+                await q.message.edit_text(f"<b>{html.escape(title)} ({html.escape(year)})</b>\n\n<b>Choose image type:</b>",
+                                          parse_mode=ParseMode.HTML, reply_markup=kb)
             except Exception:
                 pass
             return
@@ -225,8 +210,8 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
             return
 
-        ctype_, title, year = _tmdb_details(tmdb_id)
-        header = f"<b>{html.escape(title)} ({html.escape(year)})</b>\nChoose a language:"
+        _, title, year = _tmdb_details(tmdb_id)
+        header = f"<b>{html.escape(title)} ({html.escape(year)})</b>\n\n<b>Choose a language:</b>"
         kb = _build_language_keyboard(items, ctype, tmdb_id, imgtype)
         try:
             await q.message.edit_text(header, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -234,7 +219,7 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         return
 
-    # Step 3: user selected a language — send the image
+    # Step 3: user selected a language — send the image with bold info
     # poster:lang:<ctype>:<id>:<imgtype>:<langcode or 'none'>
     if data.startswith("poster:lang:"):
         parts = data.split(":")
@@ -245,9 +230,7 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         imgtype = parts[4]
         langkey = parts[5]  # e.g., 'en' or 'none'
 
-        details = _tmdb_details(tmdb_id)
-        _, title, year = details
-
+        ctype_, title, year = _tmdb_details(tmdb_id)
         images = _tmdb_images(tmdb_id, ctype)
         items = images.get("backdrops" if imgtype == "backdrop" else "posters") or []
 
@@ -278,7 +261,18 @@ async def posters_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         url = f"{TMDB_IMG}{chosen['file_path']}"
-        caption = f"<b>🎬 {html.escape(title)} - ({html.escape(year)})</b>"
+        width = chosen.get("width") or "Unknown"
+        height = chosen.get("height") or "Unknown"
+        lang_name = _lang_label(None if langkey == "none" else langkey)
+
+        caption = (
+            f"<b>{html.escape(title)} ({html.escape(year)})</b>\n\n"
+            f"<b>• Type : {'Landscape' if imgtype == 'backdrop' else 'Portrait'}</b>\n\n"
+            f"<b>• Language: {html.escape(lang_name)}</b>\n\n"
+            f"<b>• Width: {html.escape(str(width))}, Height: {html.escape(str(height))}</b>\n\n"
+            f"<b>• <a href='{html.escape(url)}'>Click Here</a></b>"
+        )
+
         img = download_bytes(url)
         if img:
             try:
