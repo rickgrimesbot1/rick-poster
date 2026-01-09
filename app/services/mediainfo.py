@@ -4,6 +4,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Tuple, Optional
 
 import requests
@@ -36,55 +37,108 @@ def _map_codec_name(raw: str) -> str:
     return raw.strip()
 
 def _resolve_mediainfo_bin() -> Optional[str]:
-    # Try current PATH first
     path = shutil.which("mediainfo")
     if path:
         return path
-
-    # Common Heroku apt buildpack locations
-    candidates = [
-        "/app/.apt/usr/bin/mediainfo",
-        "/app/.apt/bin/mediainfo",
-        "/usr/bin/mediainfo",
-        "/usr/local/bin/mediainfo",
-    ]
-    for p in candidates:
+    for p in ("/app/.apt/usr/bin/mediainfo", "/app/.apt/bin/mediainfo", "/usr/bin/mediainfo", "/usr/local/bin/mediainfo"):
         if os.path.exists(p):
             return p
-
-    # Try augmenting PATH (Heroku apt buildpack usually adds these already)
     extra = "/app/.apt/usr/bin:/app/.apt/bin"
     os.environ["PATH"] = f"{extra}:{os.environ.get('PATH', '')}"
-    path = shutil.which("mediainfo")
-    return path
+    return shutil.which("mediainfo")
+
+def _http_get_partial_to_file(url: str, limit_bytes: int = 50 * 1024 * 1024, timeout: int = 60) -> Optional[str]:
+    """
+    Download up to limit_bytes to a temp file with Range + retries and browser-like headers.
+    Returns temp file path or None on failure.
+    """
+    headers_base = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+        "Pragma": "no-cache",
+        "Cache-Control": "no-cache",
+    }
+
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        try:
+            # Prefer Range request
+            headers = dict(headers_base)
+            headers["Range"] = f"bytes=0-{limit_bytes-1}"
+
+            with requests.get(url, headers=headers, stream=True, timeout=timeout, verify=False) as r:
+                status = r.status_code
+                if status in (200, 206):
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
+                        downloaded = 0
+                        for chunk in r.iter_content(chunk_size=1024 * 1024):
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if downloaded >= limit_bytes:
+                                break
+                        return f.name
+                elif 500 <= status < 600:
+                    logger.warning(f"HTTP {status} from server (attempt {attempt}/3), retrying...")
+                    time.sleep(1.5 * attempt)
+                    continue
+                else:
+                    # Try fallback without Range once
+                    if attempt == 1:
+                        logger.warning(f"HTTP {status} on Range; retry without Range...")
+                        with requests.get(url, headers=headers_base, stream=True, timeout=timeout, verify=False) as r2:
+                            if r2.status_code == 200:
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
+                                    downloaded = 0
+                                    for chunk in r2.iter_content(chunk_size=1024 * 1024):
+                                        if not chunk:
+                                            break
+                                        f.write(chunk)
+                                        downloaded += len(chunk)
+                                        if downloaded >= limit_bytes:
+                                            break
+                                    return f.name
+                            elif 500 <= r2.status_code < 600:
+                                logger.warning(f"HTTP {r2.status_code} (no-Range) attempt {attempt}/3, retrying...")
+                                time.sleep(1.5 * attempt)
+                                continue
+                            else:
+                                logger.warning(f"HTTP {r2.status_code} (no-Range), giving up this attempt.")
+                                time.sleep(0.5)
+                                continue
+        except requests.RequestException as e:
+            logger.warning(f"Partial GET error (attempt {attempt}/3): {e}")
+            time.sleep(1.0 * attempt)
+        except Exception as e:
+            logger.warning(f"Partial GET unexpected error (attempt {attempt}/3): {e}")
+            time.sleep(1.0 * attempt)
+
+    return None
 
 def get_text_from_url_or_path(url: str) -> Optional[str]:
     temp_path = None
     target = url
     try:
-        if url.startswith("http://") or url.startswith("https://"):
-            r = requests.get(url, stream=True, timeout=60, verify=False)
-            r.raise_for_status()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
-                temp_path = f.name
-                downloaded = 0
-                limit = 50 * 1024 * 1024
-                for chunk in r.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if downloaded >= limit:
-                        break
+        if url.startswith(("http://", "https://")):
+            temp_path = _http_get_partial_to_file(url, limit_bytes=50 * 1024 * 1024, timeout=60)
+            if not temp_path:
+                logger.warning("mediainfo partial download failed (all retries).")
+                return None
             target = temp_path
 
         bin_path = _resolve_mediainfo_bin()
         if not bin_path:
-            logger.warning("mediainfo not found on PATH and known locations.")
+            logger.warning("mediainfo not found on PATH/known locations.")
             return None
 
         out = subprocess.check_output([bin_path, target], stderr=subprocess.STDOUT)
         return out.decode("utf-8", errors="ignore")
+
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"mediainfo process error: {e.output.decode('utf-8', errors='ignore')[:400]}")
+        return None
     except Exception as e:
         logger.warning(f"mediainfo failed: {e}")
         return None
