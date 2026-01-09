@@ -31,21 +31,21 @@ def main():
     app.add_handler(CommandHandler("allow", core.allow_user, block=True))
     app.add_handler(CommandHandler("deny", core.deny_user, block=True))
 
-    # Core
+    # Core media commands
     app.add_handler(CommandHandler("get", core.get_cmd, block=True))
     app.add_handler(CommandHandler("info", core.info_cmd, block=True))
     app.add_handler(CommandHandler("ls", core.ls_cmd, block=True))
     app.add_handler(CommandHandler("tmdb", core.tmdb_cmd, block=True))
     app.add_handler(MessageHandler(filters.PHOTO, core.manual_poster))
 
-    # UCER
+    # UCER settings
     app.add_handler(CommandHandler("ucer", ucer.ucer_cmd, block=True))
-    app.add_handler(CallbackQueryHandler(ucer.ucer_cb, pattern="^ucer:"))
+    app.add_handler(CallbackQueryHandler(ucer.ucer_cb, pattern="^ucer:", block=True))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ucer.ucer_text))
 
-    # Admin
+    # Admin panel
     app.add_handler(CommandHandler("admin", admin.admin_cmd, block=True))
-    app.add_handler(CallbackQueryHandler(admin.admin_cb, pattern="^admin:"))
+    app.add_handler(CallbackQueryHandler(admin.admin_cb, pattern="^admin:", block=True))
 
     # Streaming posters
     app.add_handler(CommandHandler("amzn", streaming.amzn, block=True))
@@ -68,14 +68,14 @@ def main():
     app.add_handler(CommandHandler("sl", streaming.sl, block=True))
     app.add_handler(CommandHandler("tk", streaming.tk, block=True))
 
-    # Posters UI
+    # Posters UI (type + language selection)
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=True))
-    app.add_handler(CallbackQueryHandler(posters_ui.posters_cb, pattern="^poster:"))
+    app.add_handler(CallbackQueryHandler(posters_ui.posters_cb, pattern="^poster:", block=True))
 
-    # Restart + whoami
+    # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=True))
     app.add_handler(CommandHandler("restart", restart.restart_cmd, block=True))
-    app.add_handler(CallbackQueryHandler(restart.restart_cb, pattern="^restart:"))
+    app.add_handler(CallbackQueryHandler(restart.restart_cb, pattern="^restart:", block=True))
 
     print("Bot running...")
     app.run_polling()
