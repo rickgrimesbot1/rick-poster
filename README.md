@@ -8,26 +8,33 @@ A modular Telegram bot that:
 - Converts Google Drive links to GDFlix share links
 - Fetches TMDB metadata and posters/backdrops with type and language filters
 - Extracts and formats audio tracks via MediaInfo
+- Ott Poster Scrap
 - Provides owner-only settings and restart controls
 
-## Features
+<details>
+<summary><strong>Features</strong></summary>
 
 - Google Drive → GDFlix integration
 - TMDB poster/backdrop selection with:
   - Type: Landscape (backdrops) or Portrait (posters)
-  - Language: No Language, English, Tamil, Telugu, Hindi, Malayalam, Kannada (+ any other TMDB languages)
   - Pagination with arrows and numeric buttons
   - Bold caption including a direct “Click Here” image link
 - Manual caption reposting for poster images
 - Owner-only interactive environment manager and restart
+- 
+</details>
 
-## Requirements
+<details>
+<summary><strong>Requirements</strong></summary>
 
 - Python 3.11+
 - Telegram Bot API token (BotFather)
 - Optional: Heroku or any host for long-running Python processes
 
-## Environment Variables
+</details>
+
+<details>
+<summary><strong>Environment Variables</strong></summary>
 
 Set via platform configuration (e.g., Heroku Config Vars) or a local `.env` file:
 
@@ -45,7 +52,10 @@ Set via platform configuration (e.g., Heroku Config Vars) or a local `.env` file
 - STATE_REMOTE_URL (optional)
 - DISABLE_MEDIAINFO (0 or 1)
 
-## Deploy (Heroku Example)
+</details>
+
+<details>
+<summary><strong>Deploy (Heroku Example)</strong></summary>
 
 1) Stack and buildpacks:
 - heroku-22
@@ -64,14 +74,20 @@ Set via platform configuration (e.g., Heroku Config Vars) or a local `.env` file
   - python-dotenv==1.0.1
 
 3) Configure environment variables and deploy.
+   
+</details>
 
-## Local Development
+<details>
+<summary><strong>Local Development</strong></summary>
 
 1) Copy `.env.example` to `.env` and fill values.
 2) Create venv and install dependencies.
 3) Run `python bot.py`.
+   
+</details>
 
-## Project Structure
+<details>
+<summary><strong>Project Structure</strong></summary>
 
 - bot.py
 - app/
@@ -98,8 +114,11 @@ Set via platform configuration (e.g., Heroku Config Vars) or a local `.env` file
 - runtime.txt
 - requirements.txt
 - .env.example
+- 
+  </details>
 
-## OTT Platforms Supported (Scrape commands)
+<details>
+<summary><strong>OTT Platforms Supported (Scrape commands)</strong></summary>
 
 All OTT poster scrap commands are implemented in `app/handlers/streaming.py`. Each command fetches platform-specific posters/backdrops and renders a bold caption.
 
@@ -123,12 +142,18 @@ All OTT poster scrap commands are implemented in `app/handlers/streaming.py`. Ea
 - /tk — Tentkotta
 - /nf — Netflix (via configured worker/API)
 
-Each command:
+   </details>
+
+<details>
+<summary><strong>Each command:<summary><strong>
 - Accepts the platform URL (or Netflix ID for /nf)
 - Returns landscape and/or portrait image URLs
 - Sends bold caption with clickable image link
 
-## Troubleshooting
+ </details>
+
+<details>
+<summary><strong>Troubleshooting</strong></summary>
 
 - If the bot doesn’t respond in groups:
   - In BotFather, set privacy OFF: `/setprivacy` → OFF
@@ -140,10 +165,15 @@ Each command:
 - For persistent settings on Heroku:
   - Use Config Vars; local `.env` is not persistent across dyno restarts
 
-## Security
+ </details>
+
+<details>
+<summary><strong>Security</strong></summary>
 
 - Keep secrets in platform config (e.g., Heroku Config Vars).
 - Do not commit `.env` to version control.
+
+ </details>
 
 ## License
 
