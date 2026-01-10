@@ -1,6 +1,6 @@
 # Rick Bot – GDFlix, TMDB Posters, Audio Info
 
-[![Contact Developer on Telegram](https://img.shields.io/badge/Developer-%40J1__CHANG__WOOK-blue?logo=telegram)](https://t.me/J1_CHANG_WOOK)
+[![Contact Developer on Telegram](https://img.shields.io/badge/Developer-%40RICKGRIMES-blue?logo=telegram)](https://t.me/J1_CHANG_WOOK)
 
 - Telegram Developer: [J1_CHANG_WOOK](https://t.me/J1_CHANG_WOOK)
 
