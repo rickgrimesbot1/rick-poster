@@ -13,7 +13,7 @@ from app.utils import download_bytes, ensure_line_bold
 
 STREAM_APIS = {
     "primevideo.com": "https://amzn.rickheroko.workers.dev/?url={encoded}",
-    "sunnxt.com": "https://snxt.rickgrimesapi.workers.dev/?url={encoded}",
+    "sunnxt.com": "https://snxt.ottposters.workers.dev/?url={encoded}",
     "zee5.com": "https://zee5.rickheroko.workers.dev/?url={encoded}",
     "aha.video": "https://aha.rickgrimesapi.workers.dev/?url={encoded}",
     "manoramamax.com": "https://mmax.rickgrimesapi.workers.dev/?url={encoded}",
