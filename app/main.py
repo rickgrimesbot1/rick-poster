@@ -5,6 +5,7 @@ from telegram.ext import (
 
 from app.config import TELEGRAM_BOT_TOKEN
 from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart, bs, repost
+from app.handlers import post_publish  # NEW
 from app.state import load_state
 
 
@@ -82,6 +83,11 @@ def main():
 
     # /rk — async, with quoted bold Audio block and better image resolving
     app.add_handler(CommandHandler("rk", repost.rk, block=False))
+
+    # NEW: Channel posting helpers
+    app.add_handler(CommandHandler("post", post_publish.post_cmd, block=False))
+    app.add_handler(CommandHandler("setchannel", post_publish.setchannel_cmd, block=False))
+    app.add_handler(CommandHandler("clearchannel", post_publish.clearchannel_cmd, block=False))
 
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=False))
