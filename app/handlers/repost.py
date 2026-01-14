@@ -3,16 +3,17 @@ import logging
 import re
 import urllib.parse
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Tuple
 
 import aiohttp
-from bs4 import BeautifulSoup  # kept if you extend later
+from bs4 import BeautifulSoup
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 logger = logging.getLogger(__name__)
 
+TMDB_IMG_ORIGIN = "https://image.tmdb.org"
 DIRECT_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 # ---------- Caption helpers assumed in your project ----------
@@ -40,7 +41,7 @@ def _ensure_session(context: ContextTypes.DEFAULT_TYPE) -> aiohttp.ClientSession
     session: Optional[aiohttp.ClientSession] = context.bot_data.get("_aiohttp_session")
     if session and not session.closed:
         return session
-    timeout = aiohttp.ClientTimeout(total=12)
+    timeout = aiohttp.ClientTimeout(total=14)
     connector = aiohttp.TCPConnector(limit=50, enable_cleanup_closed=True)
     session = aiohttp.ClientSession(timeout=timeout, connector=connector, headers={"User-Agent": "Mozilla/5.0"})
     context.bot_data["_aiohttp_session"] = session
@@ -66,10 +67,25 @@ async def _fetch_json(session: aiohttp.ClientSession, url: str) -> Optional[dict
         logger.warning(f"_fetch_json failed for {url}: {e}")
         return None
 
+async def _fetch_text(session: aiohttp.ClientSession, url: str) -> Optional[str]:
+    try:
+        async with session.get(url) as r:
+            if r.status != 200:
+                return None
+            return await r.text()
+    except Exception as e:
+        logger.warning(f"_fetch_text failed for {url}: {e}")
+        return None
+
 # ---------- URL helpers ----------
+def _image_ext_from_url(url: str) -> str:
+    # Handle querystrings like ".jpg?x=y"
+    path = urllib.parse.urlparse(url).path or url
+    ext = path.lower().rsplit(".", 1)
+    return f".{ext[-1]}" if len(ext) > 1 else ""
+
 def _is_direct_image_link(url: str) -> bool:
-    u = url.lower()
-    return any(u.endswith(ext) for ext in DIRECT_IMAGE_EXTS)
+    return _image_ext_from_url(url) in DIRECT_IMAGE_EXTS
 
 def _extract_urls(text: str | None) -> list[str]:
     if not text:
@@ -82,6 +98,33 @@ def _extract_urls(text: str | None) -> list[str]:
             out.append(u); seen.add(u)
     return out
 
+def _to_absolute_image_url(candidate: str, base: Optional[str] = None) -> str:
+    """
+    Normalize various image URL shapes to absolute HTTP(S).
+    - //image.tmdb.org/... → https:...
+    - /t/p/original/... or /w780/... → https://image.tmdb.org + path
+    - relative starting '/' with page base → urljoin(base, candidate)
+    - already absolute → return as is
+    """
+    if not candidate:
+        return candidate
+    c = candidate.strip()
+
+    if c.startswith("//"):
+        return "https:" + c
+
+    # TMDB path variants
+    if c.startswith("/t/") or c.startswith("/p/") or c.startswith("/original") or re.match(r"^/w\d+/", c):
+        return urllib.parse.urljoin(TMDB_IMG_ORIGIN, c)
+
+    if c.startswith("/"):
+        if base:
+            return urllib.parse.urljoin(base, c)
+        # fallback assume tmdb
+        return urllib.parse.urljoin(TMDB_IMG_ORIGIN, c)
+
+    return c
+
 # ---------- Streaming resolution ----------
 STREAM_API_MAP_TEMPLATES = {
     "netflix.com":      "https://nf.rickgrimesapi.workers.dev/?url={encoded}",
@@ -93,62 +136,114 @@ STREAM_API_MAP_TEMPLATES = {
     "viki.com":         "https://viki.rickheroko.workers.dev/?url={encoded}",
     "iq.com":           "https://iq.rickgrimesapi.workers.dev/?url={encoded}",
     "hbomax.com":       "https://hbomax.rickgrimesapi.workers.dev/?url={encoded}",
+    "max.com":          "https://hbomax.rickgrimesapi.workers.dev/?url={encoded}",
     "apple.com":        "https://appletv.rickheroko.workers.dev/?url={encoded}",
     "disneyplus.com":   "https://dsnp.rickgrimesapi.workers.dev/?url={encoded}",
+    "hotstar.com":      "https://dsnp.rickgrimesapi.workers.dev/?url={encoded}",
     "ultraplay":        "https://ultraplay.rickgrimesapi.workers.dev/?url={encoded}",
+    "sonyliv.com":      "https://sonyliv.rickheroko.workers.dev/?url={encoded}",
     "sonyliv":          "https://sonyliv.rickheroko.workers.dev/?url={encoded}",
     "hulu":             "https://hulu.ottposters.workers.dev/?url={encoded}",
 }
 
 def _pick_stream_api(target_url: str) -> Optional[str]:
     enc = urllib.parse.quote_plus(target_url)
+    t = target_url.lower()
     for key, tpl in STREAM_API_MAP_TEMPLATES.items():
-        if key in target_url:
+        if key in t:
             return tpl.format(encoded=enc)
     return None
 
 def _parse_landscape_from_json(data: dict | list) -> Optional[str]:
     if not isinstance(data, (dict, list)):
         return None
-    if isinstance(data, dict):
-        for k in ("landscape", "backdrop", "horizontal", "image", "url"):
-            v = data.get(k)
+
+    keys_primary = ("landscape", "backdrop", "horizontal", "image", "url", "poster_landscape", "backdrop_path")
+    keys_arrays = ("images", "backdrops", "results", "data")
+
+    def pick_from_obj(obj: dict) -> Optional[str]:
+        for k in keys_primary:
+            v = obj.get(k)
             if isinstance(v, str) and _is_direct_image_link(v):
                 return v
-        for k in ("images", "backdrops", "results", "data"):
+            if isinstance(v, str) and v.startswith("/"):  # relative (TMDB etc.)
+                if _is_direct_image_link(v):
+                    return v
+        # Common nested formats
+        v = obj.get("file_path")
+        if isinstance(v, str) and (v.startswith("/") or _is_direct_image_link(v)):
+            return v
+        return None
+
+    if isinstance(data, dict):
+        got = pick_from_obj(data)
+        if got:
+            return got
+        for k in keys_arrays:
             arr = data.get(k)
             if isinstance(arr, list):
                 for it in arr:
-                    if isinstance(it, str) and _is_direct_image_link(it):
+                    if isinstance(it, str) and (_is_direct_image_link(it) or it.startswith("/")):
                         return it
                     if isinstance(it, dict):
-                        for kk in ("landscape", "backdrop", "horizontal", "image", "url", "file_path"):
-                            vv = it.get(kk)
-                            if isinstance(vv, str) and _is_direct_image_link(vv):
-                                return vv
+                        g = pick_from_obj(it)
+                        if g:
+                            return g
     else:  # list
         for it in data:
-            if isinstance(it, str) and _is_direct_image_link(it):
+            if isinstance(it, str) and (_is_direct_image_link(it) or it.startswith("/")):
                 return it
             if isinstance(it, dict):
-                for kk in ("landscape", "backdrop", "horizontal", "image", "url", "file_path"):
-                    vv = it.get(kk)
-                    if isinstance(vv, str) and _is_direct_image_link(vv):
-                        return vv
+                g = pick_from_obj(it)
+                if g:
+                    return g
     return None
+
+async def _resolve_og_image(session: aiohttp.ClientSession, page_url: str) -> Tuple[Optional[str], Optional[str]]:
+    html_text = await _fetch_text(session, page_url)
+    if not html_text:
+        return None, None
+    soup = BeautifulSoup(html_text, "html.parser")
+    image = None
+    for key in ("og:image", "twitter:image", "og:image:url"):
+        tag = soup.find("meta", attrs={"property": key}) or soup.find("meta", attrs={"name": key})
+        if tag and tag.get("content"):
+            image = tag["content"].strip()
+            break
+    if image:
+        image = _to_absolute_image_url(image, base=page_url)
+    title = None
+    for key in ("og:title", "twitter:title"):
+        tag = soup.find("meta", attrs={"property": key}) or soup.find("meta", attrs={"name": key})
+        if tag and tag.get("content"):
+            title = tag["content"].strip()
+            break
+    if not title and soup.title and soup.title.text:
+        title = soup.title.text.strip()
+    return image, title
 
 async def _resolve_streaming_landscape(session: aiohttp.ClientSession, target_url: str) -> Optional[str]:
     cache: dict = getattr(session, "_rk_cache", {})
     cached = cache.get(target_url)
     if cached:
         return cached
+
     api_url = _pick_stream_api(target_url)
-    if not api_url:
-        return None
-    data = await _fetch_json(session, api_url)
-    if not data:
-        return None
-    landscape = _parse_landscape_from_json(data)
+    landscape = None
+
+    if api_url:
+        data = await _fetch_json(session, api_url)
+        if data:
+            candidate = _parse_landscape_from_json(data)
+            if candidate:
+                landscape = _to_absolute_image_url(candidate)
+
+    # OG fallback if API didn’t return
+    if not landscape:
+        og_img, _ = await _resolve_og_image(session, target_url)
+        if og_img:
+            landscape = og_img
+
     if landscape:
         cache[target_url] = landscape
         setattr(session, "_rk_cache", cache)
@@ -157,10 +252,8 @@ async def _resolve_streaming_landscape(session: aiohttp.ClientSession, target_ur
 # ---------- Audio block styling ----------
 def _wrap_audio_block_in_blockquote(html_caption: str) -> str:
     """
-    Find the 'Audio Tracks:' section (often appended at the end) and wrap the whole block
-    from its heading to the end-of-caption into a single quoted bold block.
-
-    Result example:
+    Wrap the 'Audio Tracks:' section as a single blockquote with each line bold.
+    Example result:
     <blockquote>
     <b>🔈 Audio Tracks:</b>
     <b>DDP | 5.1 | 640 kb/s | Korean</b>
@@ -170,49 +263,49 @@ def _wrap_audio_block_in_blockquote(html_caption: str) -> str:
     if not html_caption:
         return html_caption
 
-    # Find the start index of the audio heading (works whether it's within <b>...</b> or plain)
-    m = re.search(r'(?is)(audio\s*tracks\s*:)', html_caption)
+    # Match the line that contains "Audio Tracks:"
+    m = re.search(r'(?im)^\s*(?:<b>)?[^<]*audio\s*tracks\s*:\s*(?:</b>)?.*$', html_caption)
     if not m:
         return html_caption
 
-    start_idx = m.start()
-    # Expand to the beginning of that line
-    line_start = html_caption.rfind("\n", 0, start_idx)
-    if line_start == -1:
-        line_start = 0
-    else:
-        line_start += 1  # move past the newline
+    start_line_idx = m.start()
+    audio_segment = html_caption[start_line_idx:].strip()
 
-    audio_segment = html_caption[line_start:].strip()
-    # Avoid double-wrapping: if already inside a blockquote, keep as is
-    if audio_segment.startswith("<blockquote>"):
+    # Stop block at first double newline after the audio section, if present
+    split_idx = audio_segment.find("\n\n")
+    if split_idx != -1:
+        audio_block = audio_segment[:split_idx]
+        rest = audio_segment[split_idx + 2 :]
+    else:
+        audio_block = audio_segment
+        rest = ""
+
+    # Avoid double wrap
+    if audio_block.startswith("<blockquote>"):
         return html_caption
 
-    # Ensure each line is bold; if already bold, keep it
-    lines = audio_segment.splitlines()
-    styled_lines: list[str] = []
+    # Bold every non-empty line
+    lines = [l for l in audio_block.splitlines() if l.strip()]
+    styled = []
     for l in lines:
         s = l.strip()
-        if not s:
-            continue
-        if s.lower().startswith("</blockquote>"):
-            # defensive
-            continue
         if not (s.startswith("<b>") and s.endswith("</b>")):
             s = f"<b>{s}</b>"
-        styled_lines.append(s)
+        styled.append(s)
+    quoted = "<blockquote>\n" + "\n".join(styled) + "\n</blockquote>"
 
-    quoted = "<blockquote>\n" + "\n".join(styled_lines) + "\n</blockquote>"
-    return html_caption[:line_start] + quoted
+    rebuilt = html_caption[:start_line_idx] + quoted
+    if rest:
+        rebuilt += "\n\n" + rest
+    return rebuilt
 
 # ---------- Command ----------
 async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Fast /rk:
-    - /rk <streaming link> → fetch landscape via worker API (async) and upload.
-    - /rk <direct image link> → download and upload bytes.
-    - When replying to a /get post, reuse the SAME caption (FULL BOLD + UCER transform).
-    - Audio block is rendered as a single quoted bold block.
+    /rk:
+    - /rk <streaming link> → resolve LANDSCAPE image via worker API; fallback to OG image if needed.
+    - /rk <direct image link> → download and upload (supports TMDB paths and querystrings).
+    - When replying to a /get post, reuse SAME caption (FULL BOLD + UCER), with Audio section as quoted bold block.
     """
     track_user(update.effective_user.id)
     msg = update.message
@@ -235,15 +328,15 @@ async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption = _transform_audio_block_to_ucer(caption, update.effective_user.id)
         except Exception as e:
             logger.warning(f"/rk audio transform failed: {e}")
-        # Ensure requested styling for Audio block
         caption = _wrap_audio_block_in_blockquote(caption)
 
     session = _ensure_session(context)
 
-    # Direct image link flow
-    if _is_direct_image_link(target):
+    # Direct image link flow (supports TMDB relative path too)
+    if _is_direct_image_link(target) or target.startswith("/"):
+        abs_url = _to_absolute_image_url(target)
         status = await msg.reply_text("⬇️ Downloading image...")
-        img_bytes = await _download_bytes(session, target)
+        img_bytes = await _download_bytes(session, abs_url)
         if not img_bytes:
             await status.edit_text("❌ Could not download the image.")
             return
