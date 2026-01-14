@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 # Allowed direct image extensions
 DIRECT_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
-# Simple downloader (fallback if your project doesn't already have one)
+
 def download_poster_bytes(url: str, timeout: int = 25) -> Optional[bytes]:
+    """Download bytes for an image URL."""
     try:
         r = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
@@ -25,15 +26,12 @@ def download_poster_bytes(url: str, timeout: int = 25) -> Optional[bytes]:
         logger.warning(f"download_poster_bytes failed for {url}: {e}")
         return None
 
+
 def _is_direct_image_link(url: str) -> bool:
+    """Check if the URL points to a direct image (jpg/png/webp/avif)."""
     url_low = url.lower()
     return any(url_low.endswith(ext) for ext in DIRECT_IMAGE_EXTS)
 
-def _first_url(text: str | None) -> Optional[str]:
-    if not text:
-        return None
-    m = re.search(r"https?://[^\s<>'\"]+", text)
-    return m.group(0) if m else None
 
 # NOTE: The following helpers are assumed to exist in your project.
 # If they are in different modules, import them accordingly.
@@ -46,6 +44,7 @@ except Exception:  # pragma: no cover
     def track_user(user_id: int):  # fallback no-op
         logger.debug(f"track_user noop for {user_id}")
 
+
 try:
     from app.handlers.utils import make_full_bold  # adjust if you keep it elsewhere
 except Exception:  # pragma: no cover
@@ -54,6 +53,7 @@ except Exception:  # pragma: no cover
         lines = [(f"<b>{html.escape(l)}</b>" if l.strip() else l) for l in (text or "").splitlines()]
         return "\n".join(lines)
 
+
 try:
     from app.handlers.ucer import transform_audio_block as _transform_audio_block_to_ucer  # adjust if needed
 except Exception:  # pragma: no cover
@@ -61,12 +61,13 @@ except Exception:  # pragma: no cover
         # fallback: no transform
         return text
 
+
 async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /rk behavior as requested:
+    /rk behavior:
 
     1) /rk <streaming link>
-       - Must be used as a reply to a /get post (to reuse the SAME caption).
+       - Prefer to use as a reply to your /get post to reuse the SAME caption.
        - Detect platform via API map, fetch LANDSCAPE poster via API, download and post.
        - Caption = replied message caption transformed to FULL BOLD (+ UCER audio transform if enabled in your implementation).
 
@@ -75,18 +76,16 @@ async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
        - Download the image bytes and post as photo.
        - If used as a reply to a /get post, reuse the SAME caption (FULL BOLD + UCER).
 
-    3) If used with no args:
-       - Enforce reply usage and show usage text.
+    3) No args → show usage.
     """
     track_user(update.effective_user.id)
     msg = update.message
 
-    # Must have args or reply (we require args per your original flow)
     if not context.args:
         await msg.reply_text("❌ Usage:\n/rk <streaming link | direct image link>\n\nTip: Reply to your /get post to reuse the same caption.")
         return
 
-    # Parse the target URL from args
+    # Target URL from args
     target = context.args[0].strip()
 
     # If reply exists, try to reuse its caption
@@ -128,9 +127,8 @@ async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-    # 2) Streaming flow via API map
+    # 2) Streaming flow via API map (landscape only)
     encoded = urllib.parse.quote_plus(target)
-    # Expandable API map
     api_map = {
         "netflix.com":      f"https://nf.rickgrimesapi.workers.dev/?url={encoded}",
         "primevideo.com":   f"https://amzn.rickheroko.workers.dev/?url={encoded}",
@@ -186,12 +184,14 @@ async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if isinstance(v, list):
                     for it in v:
                         if isinstance(it, str) and _is_direct_image_link(it):
-                            landscape = it; break
+                            landscape = it
+                            break
                         if isinstance(it, dict):
                             for kk in ("landscape", "backdrop", "horizontal", "image", "url", "file_path"):
                                 x = it.get(kk)
                                 if isinstance(x, str) and _is_direct_image_link(x):
-                                    landscape = x; break
+                                    landscape = x
+                                    break
                         if landscape:
                             break
                 if landscape:
@@ -223,3 +223,8 @@ async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await (replied.reply_photo if replied else msg.reply_photo)(photo=bio)
+
+
+# Backwards-compat alias for older registrations
+async def rk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await rk(update, context)
