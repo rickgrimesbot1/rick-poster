@@ -80,7 +80,7 @@ def main():
     app.add_handler(CallbackQueryHandler(bs.bs_cb, pattern="^bs:", block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bs.bs_text))
 
-    # /rk — async, with quoted bold Audio block
+    # /rk — async, with quoted bold Audio block and better image resolving
     app.add_handler(CommandHandler("rk", repost.rk, block=False))
 
     # Restart (owner) and whoami
