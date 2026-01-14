@@ -2,15 +2,18 @@ import logging
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 )
+
 from app.config import TELEGRAM_BOT_TOKEN
 from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart, bs, repost
 from app.state import load_state
+
 
 def setup_logging():
     logging.basicConfig(
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         level=logging.INFO,
     )
+
 
 def main():
     setup_logging()
@@ -77,8 +80,8 @@ def main():
     app.add_handler(CallbackQueryHandler(bs.bs_cb, pattern="^bs:", block=True))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bs.bs_text))
 
-    # Repost caption/media from a replied message — now with optional Audio info block
-    app.add_handler(CommandHandler("rk", repost.rk_cmd, block=True))
+    # /rk: streaming link → landscape via API; direct image link → download+post; reuse caption when replying
+    app.add_handler(CommandHandler("rk", repost.rk, block=True))
 
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=True))
@@ -87,6 +90,7 @@ def main():
 
     print("Bot running...")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
