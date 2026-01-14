@@ -1,147 +1,225 @@
-import os
-import re
 import html
+import logging
+import re
+import urllib.parse
 from io import BytesIO
-from typing import Optional, Tuple
+from typing import Optional
 
+import requests
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
-# If your project already has a MediaInfo helper, import it here.
-# Adjust these imports/names to match your existing codebase.
-try:
-    from app.services.mediainfo import probe_url as mediainfo_probe
-except Exception:
-    mediainfo_probe = None  # Fallback if not available
+logger = logging.getLogger(__name__)
 
+# Allowed direct image extensions
+DIRECT_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
-def _audio_enabled(context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """
-    UCER settings + global toggle:
-    - If UCER toggled ON in your UI, set context.bot_data['ucer_audio_enabled'] = True.
-    - DISABLE_MEDIAINFO=1 will force OFF.
-    """
-    if str(os.environ.get("DISABLE_MEDIAINFO", "0")).strip() == "1":
-        return False
-    return bool(context.bot_data.get("ucer_audio_enabled", True))
+# Simple downloader (fallback if your project doesn't already have one)
+def download_poster_bytes(url: str, timeout: int = 25) -> Optional[bytes]:
+    try:
+        r = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        return r.content
+    except Exception as e:
+        logger.warning(f"download_poster_bytes failed for {url}: {e}")
+        return None
 
+def _is_direct_image_link(url: str) -> bool:
+    url_low = url.lower()
+    return any(url_low.endswith(ext) for ext in DIRECT_IMAGE_EXTS)
 
-def _extract_first_url(text: str | None) -> Optional[str]:
+def _first_url(text: str | None) -> Optional[str]:
     if not text:
         return None
-    # Try anchor href (Click Here)
-    m = re.search(r"""<a\s+href=['"]([^'"]+)['"]""", text, flags=re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    # Plain URL
-    m = re.search(r"""https?://[^\s<>'"]+""", text)
-    if m:
-        return m.group(0).strip()
-    return None
+    m = re.search(r"https?://[^\s<>'\"]+", text)
+    return m.group(0) if m else None
 
+# NOTE: The following helpers are assumed to exist in your project.
+# If they are in different modules, import them accordingly.
+# - track_user(user_id: int)
+# - make_full_bold(caption: str) -> str
+# - _transform_audio_block_to_ucer(caption: str, user_id: int) -> str
+try:
+    from app.handlers.core import track_user  # adjust if different location
+except Exception:  # pragma: no cover
+    def track_user(user_id: int):  # fallback no-op
+        logger.debug(f"track_user noop for {user_id}")
 
-def _format_audio_block(info: dict | None) -> str:
-    """
-    Build a bold 'Audio' block in HTML.
-    Expected info format:
-      {
-        "tracks": [
-          {"lang": "English", "codec": "EAC3", "channels": "5.1", "bitrate": "640 kbps"},
-          ...
-        ]
-      }
-    Adjust this to match your mediainfo output.
-    """
-    if not info or not info.get("tracks"):
-        return ""
-    lines = ["\n<b>Audio:</b>"]
-    for t in info["tracks"]:
-        lang = t.get("lang") or t.get("language") or "Unknown"
-        codec = t.get("codec") or t.get("format") or "Unknown"
-        ch = t.get("channels") or t.get("ch") or "?"
-        br = t.get("bitrate") or t.get("bit_rate") or ""
-        sr = t.get("sample_rate") or ""
-        parts = [lang, codec, f"{ch}ch"]
-        if br:
-            parts.append(str(br))
-        if sr:
-            parts.append(str(sr))
-        lines.append("• " + " • ".join(html.escape(str(x)) for x in parts if x))
-    return "\n".join(lines)
+try:
+    from app.handlers.utils import make_full_bold  # adjust if you keep it elsewhere
+except Exception:  # pragma: no cover
+    def make_full_bold(text: str) -> str:
+        # naive fallback: wrap every non-empty line in <b>...</b>
+        lines = [(f"<b>{html.escape(l)}</b>" if l.strip() else l) for l in (text or "").splitlines()]
+        return "\n".join(lines)
 
+try:
+    from app.handlers.ucer import transform_audio_block as _transform_audio_block_to_ucer  # adjust if needed
+except Exception:  # pragma: no cover
+    def _transform_audio_block_to_ucer(text: str, user_id: int) -> str:
+        # fallback: no transform
+        return text
 
-async def rk_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /rk — Repost the replied poster/photo/video with the same bold caption and buttons.
-    If UCER settings are ON (and MediaInfo enabled), append Audio info block based on the URL in the caption.
-    Usage:
-      - Reply to a message that has the poster and caption, then send /rk.
-      - The original message must contain a URL (e.g., 'Click Here') that points to the media file or source.
+    /rk behavior as requested:
+
+    1) /rk <streaming link>
+       - Must be used as a reply to a /get post (to reuse the SAME caption).
+       - Detect platform via API map, fetch LANDSCAPE poster via API, download and post.
+       - Caption = replied message caption transformed to FULL BOLD (+ UCER audio transform if enabled in your implementation).
+
+    2) /rk <direct image link>
+       - Direct TMDB/PNG/JPG/WEBP/AVIF link.
+       - Download the image bytes and post as photo.
+       - If used as a reply to a /get post, reuse the SAME caption (FULL BOLD + UCER).
+
+    3) If used with no args:
+       - Enforce reply usage and show usage text.
     """
+    track_user(update.effective_user.id)
     msg = update.message
-    if not msg:
+
+    # Must have args or reply (we require args per your original flow)
+    if not context.args:
+        await msg.reply_text("❌ Usage:\n/rk <streaming link | direct image link>\n\nTip: Reply to your /get post to reuse the same caption.")
         return
 
-    src = msg.reply_to_message
-    if not src:
-        await msg.reply_text("Reply to a message with a poster/photo/video and then use /rk.")
+    # Parse the target URL from args
+    target = context.args[0].strip()
+
+    # If reply exists, try to reuse its caption
+    replied = msg.reply_to_message
+    raw_caption = (replied.caption or replied.text) if replied else None
+    base_caption = ""
+    if raw_caption:
+        # FULL BOLD caption
+        base_caption = make_full_bold(raw_caption)
+        # Apply UCER audio transform if enabled in your UCER module
+        try:
+            base_caption = _transform_audio_block_to_ucer(base_caption, update.effective_user.id)
+        except Exception as e:
+            logger.warning(f"/rk audio transform failed: {e}")
+
+    # 1) Direct image flow (jpg/png/webp/avif, including TMDB image URLs)
+    if _is_direct_image_link(target):
+        status = await msg.reply_text("⬇️ Downloading image...")
+        poster_bytes = download_poster_bytes(target)
+        if not poster_bytes:
+            await status.edit_text("❌ Could not download the image.")
+            return
+
+        bio = BytesIO(poster_bytes)
+        bio.name = "poster.jpg"
+        try:
+            await status.delete()
+        except Exception:
+            pass
+
+        # If we had a replied caption, reuse it; otherwise, send without caption
+        if base_caption:
+            await (replied.reply_photo if replied else msg.reply_photo)(
+                photo=bio, caption=base_caption, parse_mode=ParseMode.HTML
+            )
+        else:
+            await (replied.reply_photo if replied else msg.reply_photo)(
+                photo=bio
+            )
         return
 
-    # Prefer HTML variants if available
-    base_caption = (
-        getattr(src, "caption_html", None)
-        or getattr(src, "caption", None)
-        or getattr(src, "text_html", None)
-        or getattr(src, "text", None)
-        or ""
+    # 2) Streaming flow via API map
+    encoded = urllib.parse.quote_plus(target)
+    # Expandable API map
+    api_map = {
+        "netflix.com":      f"https://nf.rickgrimesapi.workers.dev/?url={encoded}",
+        "primevideo.com":   f"https://amzn.rickheroko.workers.dev/?url={encoded}",
+        "sunnxt.com":       f"https://snxt.rickgrimesapi.workers.dev/?url={encoded}",
+        "zee5.com":         f"https://zee5.rickheroko.workers.dev/?url={encoded}",
+        "aha.video":        f"https://aha.rickgrimesapi.workers.dev/?url={encoded}",
+        "manoramamax.com":  f"https://mmax.rickgrimesapi.workers.dev/?url={encoded}",
+        "viki.com":         f"https://viki.rickheroko.workers.dev/?url={encoded}",
+        "iq.com":           f"https://iq.rickgrimesapi.workers.dev/?url={encoded}",
+        "hbomax.com":       f"https://hbomax.rickgrimesapi.workers.dev/?url={encoded}",
+        "apple.com":        f"https://appletv.rickheroko.workers.dev/?url={encoded}",
+        "disneyplus.com":   f"https://dsnp.rickgrimesapi.workers.dev/?url={encoded}",
+        "ultraplay":        f"https://ultraplay.rickgrimesapi.workers.dev/?url={encoded}",
+        "sonyliv":          f"https://sonyliv.rickheroko.workers.dev/?url={encoded}",
+        "hulu":             f"https://hulu.ottposters.workers.dev/?url={encoded}",
+    }
+
+    api_url = None
+    for key, api in api_map.items():
+        if key in target:
+            api_url = api
+            break
+
+    if not api_url:
+        await msg.reply_text("❌ Unsupported streaming platform or not a direct image link.")
+        return
+
+    status = await msg.reply_text("🔍 Fetching streaming poster...")
+
+    # Request JSON from the worker and extract landscape
+    try:
+        r = requests.get(api_url, timeout=30)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        await status.edit_text(f"❌ API error\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        return
+
+    # Common keys for landscape/backdrop
+    landscape = (
+        data.get("landscape")
+        or data.get("backdrop")
+        or data.get("horizontal")
+        or data.get("image")
+        or data.get("url")
     )
 
-    reply_markup = src.reply_markup
+    if not landscape or not _is_direct_image_link(str(landscape)):
+        # Try resolving nested structures
+        if isinstance(data, dict):
+            for k in ("images", "backdrops", "results", "data"):
+                v = data.get(k)
+                if isinstance(v, list):
+                    for it in v:
+                        if isinstance(it, str) and _is_direct_image_link(it):
+                            landscape = it; break
+                        if isinstance(it, dict):
+                            for kk in ("landscape", "backdrop", "horizontal", "image", "url", "file_path"):
+                                x = it.get(kk)
+                                if isinstance(x, str) and _is_direct_image_link(x):
+                                    landscape = x; break
+                        if landscape:
+                            break
+                if landscape:
+                    break
 
-    # Append audio info when enabled and a URL is available
-    caption = base_caption or ""
-    if _audio_enabled(context):
-        url = _extract_first_url(caption)
-        if not url and src and src.text:
-            url = _extract_first_url(src.text)
-        audio_block = ""
-        if url and mediainfo_probe:
-            try:
-                info = mediainfo_probe(url)  # Adjust to your actual function signature
-                audio_block = _format_audio_block(info)
-            except Exception:
-                audio_block = ""
-        if audio_block:
-            caption = f"{caption}\n{audio_block}"
+    if not landscape:
+        await status.edit_text("❌ Landscape poster not found")
+        return
 
-    # Repost media with updated caption
+    poster_bytes = download_poster_bytes(landscape)
+    if not poster_bytes:
+        await status.edit_text("❌ Poster download failed")
+        return
+
+    bio = BytesIO(poster_bytes)
+    bio.name = "streaming_landscape.jpg"
+
     try:
-        if src.photo:
-            file_id = src.photo[-1].file_id
-            await msg.chat.send_photo(photo=file_id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-            return
+        await status.delete()
+    except Exception:
+        pass
 
-        if src.animation:
-            file_id = src.animation.file_id
-            await msg.chat.send_animation(animation=file_id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-            return
-
-        if src.video:
-            file_id = src.video.file_id
-            await msg.chat.send_video(video=file_id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-            return
-
-        if src.document and (src.document.mime_type or "").startswith("image/"):
-            file_id = src.document.file_id
-            await msg.chat.send_photo(photo=file_id, caption=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-            return
-
-        # Fallback: just resend the caption
-        if caption:
-            await msg.chat.send_message(text=caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-            return
-
-        await msg.reply_text("Couldn’t detect media or caption in the replied message.")
-    except Exception as e:
-        await msg.reply_text(f"❌ Repost failed:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+    # Send with SAME caption (FULL BOLD + UCER) if replying to a /get post
+    if base_caption:
+        await (replied.reply_photo if replied else msg.reply_photo)(
+            photo=bio,
+            caption=base_caption,
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await (replied.reply_photo if replied else msg.reply_photo)(photo=bio)
