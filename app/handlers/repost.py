@@ -250,50 +250,74 @@ async def _resolve_streaming_landscape(session: aiohttp.ClientSession, target_ur
     return landscape
 
 # ---------- Audio block styling ----------
+def _strip_b_tags(s: str) -> str:
+    s = s.strip()
+    if s.startswith("<b>") and s.endswith("</b>"):
+        return s[3:-4].strip()
+    return s
+
 def _wrap_audio_block_in_blockquote(html_caption: str) -> str:
     """
-    Wrap the 'Audio Tracks:' section as a single blockquote with each line bold.
-    Example result:
-    <blockquote><b>🔈 Audio Tracks:</b>
-    <b>DDP | 5.1 | 640 kb/s | Korean</b>
-    <b>DDP | 5.1 | 640 kb/s | English</b></blockquote>
+    Format the 'Audio Tracks:' section exactly as:
+      <blockquote><b>🔈 Audio Tracks:</b>
+        <b>DDP | 5.1 | 640 kb/s | Korean</b>
+        <b>DDP | 5.1 | 640 kb/s | English</b></blockquote>
+
+    - Detects the header line case-insensitively, with or without emoji and existing <b> tags.
+    - Wraps the whole audio block into one <blockquote>.
+    - Ensures every line inside blockquote is bold.
+    - Adds 4-space indentation before track lines (not the header).
     """
     if not html_caption:
         return html_caption
 
-    # Match the line that contains "Audio Tracks:"
+    # Find the header line containing "Audio Tracks:"
     m = re.search(r'(?im)^\s*(?:<b>)?[^<]*audio\s*tracks\s*:\s*(?:</b>)?.*$', html_caption)
     if not m:
         return html_caption
 
-    start_line_idx = m.start()
-    audio_segment = html_caption[start_line_idx:].strip()
+    start_idx = m.start()
+    tail = html_caption[start_idx:].strip()
 
-    # Stop block at first double newline after the audio section, if present
-    split_idx = audio_segment.find("\n\n")
+    # Stop audio block at first blank line (double newline); else use till end
+    split_idx = tail.find("\n\n")
     if split_idx != -1:
-        audio_block = audio_segment[:split_idx]
-        rest = audio_segment[split_idx + 2 :]
+        audio_block = tail[:split_idx]
+        rest = tail[split_idx + 2 :]
     else:
-        audio_block = audio_segment
+        audio_block = tail
         rest = ""
 
-    # Avoid double wrap
-    if audio_block.startswith("<blockquote>"):
+    # If already wrapped, leave as-is
+    if audio_block.lstrip().startswith("<blockquote>"):
         return html_caption
 
-    # Bold every non-empty line
-    lines = [l for l in audio_block.splitlines() if l.strip()]
-    styled = []
-    for l in lines:
-        s = l.strip()
-        if not (s.startswith("<b>") and s.endswith("</b>")):
-            s = f"<b>{s}</b>"
-        styled.append(s)
-    quoted = "<blockquote>\n" + "\n".join(styled) + "\n</blockquote>"
+    lines = [ln for ln in audio_block.splitlines() if ln.strip()]
+    if not lines:
+        return html_caption
 
-    rebuilt = html_caption[:start_line_idx] + quoted
-    if rest:
+    # Header: strip existing <b>, enforce bold
+    header_txt = _strip_b_tags(lines[0])
+    header_line = f"<b>{header_txt}</b>"
+
+    # Track lines: strip existing <b>, indent with 4 spaces, re-bold
+    track_lines = []
+    for ln in lines[1:]:
+        t = _strip_b_tags(ln)
+        if not t:
+            continue
+        track_lines.append(f"    <b>{t}</b>")
+
+    # Build exact blockquote (no trailing newline before closing)
+    quoted = "<blockquote>" + header_line
+    if track_lines:
+        quoted += "\n" + "\n".join(track_lines)
+    quoted += "</blockquote>"
+
+    # Rebuild caption: prefix + quoted + optional rest
+    prefix = html_caption[:start_idx]
+    rebuilt = prefix + quoted
+    if rest.strip():
         rebuilt += "\n\n" + rest
     return rebuilt
 
