@@ -1,37 +1,36 @@
 import os
 
-# Optional .env auto-load for local/dev. In production (Heroku), Config Vars take precedence.
-try:
-    from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv(usecwd=True), override=False)
-except Exception:
-    pass
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+# Telegram Bot
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 OWNER_ID = int(os.getenv("OWNER_ID", "0") or "0")
 
 # GDFlix
-GDFLIX_API_KEY = os.getenv("GDFLIX_API_KEY", "").strip()
-GDFLIX_API_BASE = os.getenv("GDFLIX_API_BASE", "https://gdflix.dev/v2").strip()
-GDFLIX_FILE_BASE = os.getenv("GDFLIX_FILE_BASE", "https://gdflix.dev/file").strip()
+GDFLIX_API_KEY = os.getenv("GDFLIX_API_KEY", "")
+GDFLIX_API_BASE = os.getenv("GDFLIX_API_BASE", "")
+GDFLIX_FILE_BASE = os.getenv("GDFLIX_FILE_BASE", "")
 
 # Workers
-WORKERS_BASE = os.getenv("WORKERS_BASE", "").strip()
+WORKERS_BASE = os.getenv("WORKERS_BASE", "")
 
 # TMDB
-TMDB_API_KEY = os.getenv("TMDB_API_KEY", "").strip()
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
 
-# Start/help UI
-DEV_LINK = os.getenv("DEV_LINK", "").strip()
-START_PHOTO_URL = os.getenv("START_PHOTO_URL", "").strip()
-HELP_PHOTO_URL = os.getenv("HELP_PHOTO_URL", "").strip()
+# UI / Developer links
+DEV_LINK = os.getenv("DEV_LINK", "")
+START_PHOTO_URL = os.getenv("START_PHOTO_URL", "")
+HELP_PHOTO_URL = os.getenv("HELP_PHOTO_URL", "")
 
-# Netflix worker
-NETFLIX_API = os.getenv("NETFLIX_API", "").strip()
+# Netflix poster worker
+NETFLIX_API = os.getenv("NETFLIX_API", "")
 
-# FreeImage host
-FREEIMAGE_API_KEY = os.getenv("FREEIMAGE_API_KEY", "").strip()
-FREEIMAGE_UPLOAD_API = os.getenv("FREEIMAGE_UPLOAD_API", "https://freeimage.host/api/1/upload").strip()
+# FreeImage hosting
+FREEIMAGE_API_KEY = os.getenv("FREEIMAGE_API_KEY", "")
+FREEIMAGE_UPLOAD_API = os.getenv("FREEIMAGE_UPLOAD_API", "")
 
-# Remote state
+# Remote state persistence
 STATE_REMOTE_URL = os.getenv("STATE_REMOTE_URL", "").strip()
+STATE_REMOTE_TOKEN = os.getenv("STATE_REMOTE_TOKEN", "").strip()  # e.g., JSONBin X-Master-Key
+STATE_REMOTE_TYPE = os.getenv("STATE_REMOTE_TYPE", "").strip().lower()  # "jsonbin" or ""
+
+# Optional local fallback state path
+STATE_LOCAL_PATH = os.getenv("STATE_LOCAL_PATH", "bot_state.json")
