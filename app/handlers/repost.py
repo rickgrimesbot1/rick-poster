@@ -254,11 +254,9 @@ def _wrap_audio_block_in_blockquote(html_caption: str) -> str:
     """
     Wrap the 'Audio Tracks:' section as a single blockquote with each line bold.
     Example result:
-    <blockquote>
-    <b>🔈 Audio Tracks:</b>
+    <blockquote><b>🔈 Audio Tracks:</b>
     <b>DDP | 5.1 | 640 kb/s | Korean</b>
-    <b>DDP | 5.1 | 640 kb/s | English</b>
-    </blockquote>
+    <b>DDP | 5.1 | 640 kb/s | English</b></blockquote>
     """
     if not html_caption:
         return html_caption
