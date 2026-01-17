@@ -1,0 +1,397 @@
+import html
+import logging
+import re
+import urllib.parse
+from typing import Optional, Tuple, Dict, Any, List
+
+import aiohttp
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
+
+from app.config import (
+    GDFLIX_API_KEY, GDFLIX_API_BASE, GDFLIX_FILE_BASE,
+    WORKERS_BASE, TMDB_API_KEY
+)
+
+logger = logging.getLogger(__name__)
+
+TMDB_IMG_ORIGIN = "https://image.tmdb.org"
+DIRECT_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
+
+# ---------- Caption helpers ----------
+try:
+    from app.handlers.core import track_user
+except Exception:
+    def track_user(user_id: int):
+        logger.debug(f"track_user noop for {user_id}")
+
+try:
+    from app.handlers.ucer import transform_audio_block as _transform_audio_block_to_ucer
+except Exception:
+    def _transform_audio_block_to_ucer(text: str, user_id: int) -> str:
+        return text
+
+# ---------- Session ----------
+def _ensure_session(context: ContextTypes.DEFAULT_TYPE) -> aiohttp.ClientSession:
+    session: Optional[aiohttp.ClientSession] = context.bot_data.get("_aiohttp_session")
+    if session and not session.closed:
+        return session
+    timeout = aiohttp.ClientTimeout(total=16)
+    connector = aiohttp.TCPConnector(limit=50, enable_cleanup_closed=True)
+    session = aiohttp.ClientSession(timeout=timeout, connector=connector, headers={"User-Agent": "Mozilla/5.0"})
+    context.bot_data["_aiohttp_session"] = session
+    return session
+
+async def _fetch_json(session: aiohttp.ClientSession, url: str, headers: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any] | List[Any]]:
+    try:
+        async with session.get(url, headers=headers) as r:
+            if r.status != 200:
+                logger.warning(f"_fetch_json {url} -> {r.status}")
+                return None
+            return await r.json(content_type=None)
+    except Exception as e:
+        logger.warning(f"_fetch_json failed for {url}: {e}")
+        return None
+
+async def _fetch_text(session: aiohttp.ClientSession, url: str) -> Optional[str]:
+    try:
+        async with session.get(url) as r:
+            if r.status != 200:
+                return None
+            return await r.text()
+    except Exception as e:
+        logger.warning(f"_fetch_text failed for {url}: {e}")
+        return None
+
+async def _download_bytes(session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
+    try:
+        async with session.get(url) as r:
+            if r.status != 200:
+                return None
+            return await r.read()
+    except Exception as e:
+        logger.warning(f"_download_bytes failed for {url}: {e}")
+        return None
+
+# ---------- URL helpers ----------
+def _image_ext_from_url(url: str) -> str:
+    path = urllib.parse.urlparse(url).path or url
+    ext = path.lower().rsplit(".", 1)
+    return f".{ext[-1]}" if len(ext) > 1 else ""
+
+def _is_direct_image_link(url: str) -> bool:
+    return _image_ext_from_url(url) in DIRECT_IMAGE_EXTS
+
+def _to_absolute_image_url(candidate: str, base: Optional[str] = None) -> str:
+    if not candidate:
+        return candidate
+    c = candidate.strip()
+    if c.startswith("//"):
+        return "https:" + c
+    if c.startswith("/t/") or c.startswith("/p/") or c.startswith("/original") or re.match(r"^/w\d+/", c):
+        return urllib.parse.urljoin(TMDB_IMG_ORIGIN, c)
+    if c.startswith("/"):
+        return urllib.parse.urljoin(base or TMDB_IMG_ORIGIN, c)
+    return c
+
+# ---------- Audio block styling ----------
+def _strip_b_tags(s: str) -> str:
+    s = s.strip()
+    if s.startswith("<b>") and s.endswith("</b>"):
+        return s[3:-4].strip()
+    return s
+
+def _wrap_audio_block_in_blockquote(html_caption: str) -> str:
+    """
+    Format the 'Audio Tracks:' section exactly as:
+      <blockquote><b>🔈 Audio Tracks:</b>
+        <b>Track…</b>
+        <b>Track…</b></blockquote>
+    """
+    if not html_caption:
+        return html_caption
+    m = re.search(r'(?im)^\s*(?:<b>)?[^<]*audio\s*tracks\s*:\s*(?:</b>)?.*$', html_caption)
+    if not m:
+        return html_caption
+
+    start_idx = m.start()
+    tail = html_caption[start_idx:].strip()
+    split_idx = tail.find("\n\n")
+    if split_idx != -1:
+        audio_block = tail[:split_idx]
+        rest = tail[split_idx + 2 :]
+    else:
+        audio_block = tail
+        rest = ""
+
+    if audio_block.lstrip().startswith("<blockquote>"):
+        return html_caption
+
+    lines = [ln for ln in audio_block.splitlines() if ln.strip()]
+    if not lines:
+        return html_caption
+
+    header_txt = _strip_b_tags(lines[0])
+    header_line = f"<b>{header_txt}</b>"
+
+    track_lines = []
+    for ln in lines[1:]:
+        t = _strip_b_tags(ln)
+        if not t:
+            continue
+        track_lines.append(f"    <b>{t}</b>")
+
+    quoted = "<blockquote>" + header_line
+    if track_lines:
+        quoted += "\n" + "\n".join(track_lines)
+    quoted += "</blockquote>"
+
+    prefix = html_caption[:start_idx]
+    rebuilt = prefix + quoted
+    if rest.strip():
+        rebuilt += "\n\n" + rest
+    return rebuilt
+
+# ---------- OG image fallback ----------
+async def _resolve_og_image(session: aiohttp.ClientSession, page_url: str) -> Optional[str]:
+    html_text = await _fetch_text(session, page_url)
+    if not html_text:
+        return None
+    soup = BeautifulSoup(html_text, "html.parser")
+    for key in ("og:image", "twitter:image", "og:image:url"):
+        tag = soup.find("meta", attrs={"property": key}) or soup.find("meta", attrs={"name": key})
+        if tag and tag.get("content"):
+            return _to_absolute_image_url(tag["content"].strip(), base=page_url)
+    return None
+
+# ---------- GDFlix resolve ----------
+def _parse_query_id_from_gdflix_file(link: str) -> Optional[str]:
+    try:
+        u = urllib.parse.urlparse(link)
+        if (GDFLIX_FILE_BASE and link.startswith(GDFLIX_FILE_BASE)) or "gdflix.dev" in (u.netloc or ""):
+            qs = urllib.parse.parse_qs(u.query or "")
+            for k in ("id", "file_id", "fid"):
+                v = qs.get(k)
+                if v and v[0]:
+                    return v[0]
+    except Exception:
+        pass
+    return None
+
+async def _gdflix_resolve(session: aiohttp.ClientSession, link: str) -> Dict[str, Any]:
+    """
+    Try GDFlix API first, then worker fallback.
+    Return dict with keys: title, year, tmdb_id, tmdb_type ('movie'/'tv'), audios (list), poster_url
+    """
+    out: Dict[str, Any] = {"title": "", "year": None, "tmdb_id": None, "tmdb_type": None, "audios": [], "poster_url": None}
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if GDFLIX_API_KEY:
+        # often APIs accept x-api-key; adapt as needed
+        headers["x-api-key"] = GDFLIX_API_KEY
+
+    file_id = _parse_query_id_from_gdflix_file(link)
+    if GDFLIX_API_BASE and file_id:
+        # Try typical endpoint shapes
+        for path in (f"/file?id={file_id}", f"/files/{file_id}", f"/v2/file?id={file_id}"):
+            url = (GDFLIX_API_BASE.rstrip("/") + path)
+            data = await _fetch_json(session, url, headers=headers)
+            if not data:
+                continue
+            # Flexible field parsing
+            meta = data.get("meta") or data
+            out["title"] = meta.get("title") or meta.get("name") or ""
+            # Extract year
+            y = meta.get("year") or meta.get("release_year")
+            if not y:
+                rd = meta.get("release_date") or meta.get("date")
+                if isinstance(rd, str) and len(rd) >= 4:
+                    try:
+                        y = int(rd[:4])
+                    except Exception:
+                        y = None
+            out["year"] = y
+            # TMDB info
+            tmdb = meta.get("tmdb") or {}
+            out["tmdb_id"] = tmdb.get("id") or meta.get("tmdb_id")
+            out["tmdb_type"] = tmdb.get("type") or meta.get("type") or ("movie" if meta.get("is_movie") else "tv" if meta.get("is_tv") else None)
+            # Poster
+            p = meta.get("poster") or meta.get("poster_path") or tmdb.get("poster_path")
+            out["poster_url"] = _to_absolute_image_url(p) if isinstance(p, str) else None
+            # Audio list
+            auds = meta.get("audio") or meta.get("audios") or []
+            if isinstance(auds, list):
+                out["audios"] = auds
+            break
+
+    # Fallback via worker (if available)
+    if (not out["tmdb_id"] or not out["tmdb_type"]) and WORKERS_BASE:
+        try:
+            wurl = f"{WORKERS_BASE.rstrip('/')}/?url={urllib.parse.quote_plus(link)}"
+            data = await _fetch_json(session, wurl, headers=headers)
+            if data:
+                out["title"] = out["title"] or data.get("title") or data.get("name") or ""
+                y = out["year"] or data.get("year") or data.get("release_year")
+                if not y:
+                    rd = data.get("release_date") or data.get("date")
+                    if isinstance(rd, str) and len(rd) >= 4:
+                        try:
+                            y = int(rd[:4])
+                        except Exception:
+                            y = None
+                out["year"] = y
+                out["tmdb_id"] = out["tmdb_id"] or data.get("tmdb_id") or (data.get("tmdb") or {}).get("id")
+                out["tmdb_type"] = out["tmdb_type"] or data.get("tmdb_type") or (data.get("tmdb") or {}).get("type")
+                p = out["poster_url"] or data.get("poster") or data.get("poster_path")
+                out["poster_url"] = _to_absolute_image_url(p) if isinstance(p, str) else out["poster_url"]
+                auds = data.get("audio") or data.get("audios") or []
+                if isinstance(auds, list) and not out["audios"]:
+                    out["audios"] = auds
+        except Exception as e:
+            logger.warning(f"Worker resolve failed: {e}")
+
+    return out
+
+# ---------- TMDB ----------
+async def _tmdb_details(session: aiohttp.ClientSession, tmdb_id: Optional[int], tmdb_type: Optional[str]) -> Tuple[Optional[str], Optional[int], Optional[str]]:
+    """
+    Return (title, year, poster_url) from TMDB.
+    """
+    if not tmdb_id or not tmdb_type or not TMDB_API_KEY:
+        return None, None, None
+
+    tmdb_type = tmdb_type.lower()
+    if tmdb_type not in ("movie", "tv"):
+        return None, None, None
+
+    base = "https://api.themoviedb.org/3"
+    url = f"{base}/{tmdb_type}/{tmdb_id}?api_key={TMDB_API_KEY}&language=en-US"
+    data = await _fetch_json(session, url)
+    if not data:
+        return None, None, None
+
+    if tmdb_type == "movie":
+        title = data.get("title") or data.get("original_title")
+        rd = data.get("release_date") or ""
+    else:
+        title = data.get("name") or data.get("original_name")
+        rd = data.get("first_air_date") or ""
+
+    year = None
+    if isinstance(rd, str) and len(rd) >= 4:
+        try:
+            year = int(rd[:4])
+        except Exception:
+            year = None
+
+    poster_path = data.get("poster_path")
+    poster_url = _to_absolute_image_url(poster_path) if poster_path else None
+    return title, year, poster_url
+
+# ---------- Caption build ----------
+def _format_audio_tracks(audios: List[Dict[str, Any]]) -> str:
+    if not audios:
+        return ""
+    lines = ["🔈 Audio Tracks:"]
+    for a in audios:
+        fmt = a.get("format") or a.get("codec") or a.get("name") or ""
+        ch = a.get("channels") or a.get("channel") or ""
+        br = a.get("bitrate") or a.get("kbps") or a.get("bit_rate") or ""
+        lang = a.get("language") or a.get("lang") or ""
+        parts = []
+        if fmt: parts.append(str(fmt))
+        if ch: parts.append(str(ch))
+        if br: parts.append(f"{br} kb/s" if isinstance(br, (int, float)) else str(br))
+        if lang: parts.append(str(lang))
+        if parts:
+            lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+def _build_caption(title: Optional[str], year: Optional[int], audios: List[Dict[str, Any]], user_id: int) -> str:
+    top = []
+    if title:
+        if year:
+            top.append(f"<b>{html.escape(title)} ({year})</b>")
+        else:
+            top.append(f"<b>{html.escape(title)}</b>")
+    audio_text = _format_audio_tracks(audios)
+    caption = "\n".join(top + ([audio_text] if audio_text else [])).strip()
+    # UCER transform (user-specific audio block tweaks)
+    try:
+        caption = _transform_audio_block_to_ucer(caption, user_id)
+    except Exception:
+        pass
+    # Wrap Audio block as quoted bold block
+    caption = _wrap_audio_block_in_blockquote(caption)
+    return caption
+
+# ---------- Command ----------
+async def tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /tp <drive or GDFlix link>
+    - Resolve GDFlix metadata (title, year, audio tracks)
+    - Fetch TMDB poster (movie/tv) by tmdb_id if available
+    - Send top caption + poster
+    """
+    track_user(update.effective_user.id)
+    msg = update.message
+    if not msg:
+        return
+
+    # Accept the link from args or replied text
+    if context.args:
+        link = context.args[0].strip()
+    elif msg.reply_to_message and msg.reply_to_message.text:
+        m = re.search(r"https?://\S+", msg.reply_to_message.text)
+        link = m.group(0) if m else ""
+    else:
+        link = ""
+
+    if not link:
+        await msg.reply_text("❌ Usage:\n/tp <drive or GDFlix link>\nOr reply to a message containing the link and send /tp.", parse_mode=ParseMode.HTML)
+        return
+
+    session = _ensure_session(context)
+    status = await msg.reply_text("🔎 Resolving metadata...", parse_mode=ParseMode.HTML)
+
+    try:
+        meta = await _gdflix_resolve(session, link)
+
+        # Prefer TMDB for title/year/poster
+        tm_title, tm_year, tm_poster = await _tmdb_details(session, meta.get("tmdb_id"), meta.get("tmdb_type"))
+        title = tm_title or meta.get("title") or ""
+        year = tm_year or meta.get("year")
+        poster_url = tm_poster or meta.get("poster_url")
+
+        # Fallback OG image if still missing
+        if not poster_url:
+            poster_url = await _resolve_og_image(session, link)
+
+        caption = _build_caption(title, year, meta.get("audios") or [], update.effective_user.id)
+        if not poster_url or not _is_direct_image_link(poster_url):
+            # Poster not found; send text only
+            await status.edit_text(caption or "❌ Poster not found", parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+            return
+
+        # Download and send photo with caption
+        img_bytes = await _download_bytes(session, poster_url)
+        if not img_bytes:
+            await status.edit_text("❌ Poster download failed", parse_mode=ParseMode.HTML)
+            return
+
+        from io import BytesIO
+        bio = BytesIO(img_bytes); bio.name = "tmdb_poster.jpg"
+        try:
+            await status.delete()
+        except Exception:
+            pass
+        await msg.reply_photo(photo=bio, caption=caption, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        logger.exception("tp failed")
+        try:
+            await status.edit_text(f"❌ Failed:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
+        except Exception:
+            await msg.reply_text(f"❌ Failed:\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
