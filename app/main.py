@@ -84,9 +84,6 @@ def main():
     # /rk — caption with quoted Audio block
     app.add_handler(CommandHandler("rk", repost.rk, block=False))
 
-    # NEW: /flix — GDFlix + TMDB → TOP caption + poster (or reuse photo)
-    app.add_handler(CommandHandler("flix", flix.flix, block=False))
-
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=False))
     app.add_handler(CommandHandler("restart", restart.restart_cmd, block=False))
