@@ -5,8 +5,7 @@ from telegram.ext import (
 
 from app.config import TELEGRAM_BOT_TOKEN
 from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart, bs, repost
-from app.handlers import mediainfo  # NEW
-from app.handlers import post_publish  # already added earlier if you used /post
+from app.handlers import top_poster  # NEW
 from app.state import load_state
 
 
@@ -82,16 +81,11 @@ def main():
     app.add_handler(CallbackQueryHandler(bs.bs_cb, pattern="^bs:", block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bs.bs_text))
 
-    # /rk
+    # /rk — caption with quoted Audio block
     app.add_handler(CommandHandler("rk", repost.rk, block=False))
 
-    # NEW: /mi MediaInfo
-    app.add_handler(CommandHandler("mi", mediainfo.mi, block=False))
-
-    # Optional: Channel posting helpers
-    app.add_handler(CommandHandler("post", post_publish.post_cmd, block=False))
-    app.add_handler(CommandHandler("setchannel", post_publish.setchannel_cmd, block=False))
-    app.add_handler(CommandHandler("clearchannel", post_publish.clearchannel_cmd, block=False))
+    # NEW: /tp — top caption + TMDB poster from GDFlix/Drive link
+    app.add_handler(CommandHandler("tp", top_poster.tp, block=False))
 
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=False))
