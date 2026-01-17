@@ -148,6 +148,17 @@ def _sanitize_title_from_filename(name: str) -> Tuple[str, Optional[int], Option
     title = re.sub(r"\s+", " ", base).strip()
     return title, year, ("tv" if tv else None)
 
+def _fallback_title_from_link(link: str) -> str:
+    try:
+        u = urllib.parse.urlparse(link)
+        last = (u.path.rsplit("/", 1)[-1] or "").strip()
+        if not last:
+            last = u.netloc or "Untitled"
+        clean, _, _ = _sanitize_title_from_filename(last)
+        return clean or last or "Untitled"
+    except Exception:
+        return "Untitled"
+
 # ---------- GDFlix resolve ----------
 def _parse_query_id_from_gdflix_file(link: str) -> Optional[str]:
     try:
@@ -430,6 +441,17 @@ def _build_top_caption(title: Optional[str], year: Optional[int], audios: List[D
     caption = _wrap_audio_block_in_blockquote(caption)
     return caption
 
+def _ensure_non_empty_caption(caption: str, link: str, title: Optional[str], year: Optional[int]) -> str:
+    """
+    Avoid Telegram 'Message text is empty' by ensuring at least a bold title line.
+    """
+    if caption and caption.strip():
+        return caption
+    fallback_title = title or _fallback_title_from_link(link)
+    if year:
+        return f"<b>{html.escape(fallback_title)} ({year})</b>"
+    return f"<b>{html.escape(fallback_title)}</b>"
+
 def _reuse_replied_photo_file_id(update: Update) -> Optional[str]:
     """
     Reuse photo from replied message to place TOP caption like /get.
@@ -485,8 +507,7 @@ async def flix(update: Update, context: ContextTypes.DEFAULT_TYPE):
             og_title = await _resolve_og_title(session, link)
             candidate_title = og_title or title
             if not candidate_title:
-                u = urllib.parse.urlparse(link)
-                candidate_title = (u.path.rsplit("/", 1)[-1] or "").strip()
+                candidate_title = _fallback_title_from_link(link)
             clean_title, file_year, prefer_type = _sanitize_title_from_filename(candidate_title)
             search_year = year or file_year
             tid, ttype, stitle, syear, sposter = await _tmdb_search(session, clean_title, search_year, prefer_type)
@@ -495,12 +516,17 @@ async def flix(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 title = det_title or stitle or title or clean_title
                 year = det_year or syear or year or file_year
                 poster_url = det_poster or sposter or poster_url
+            else:
+                # If TMDB search fails, at least set title from cleaned filename
+                title = title or clean_title
+                year = year or file_year
 
         # Final fallback: OG image from the page
         if not poster_url:
             poster_url = await _resolve_og_image(session, link)
 
         caption = _build_top_caption(title, year, audios, update.effective_user.id)
+        caption = _ensure_non_empty_caption(caption, link, title, year)
 
         # If we have a poster URL, send photo with caption
         img_url = _to_absolute_image_url(poster_url) if poster_url else None
@@ -525,7 +551,7 @@ async def flix(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if file_id:
             await msg.reply_photo(photo=file_id, caption=caption, parse_mode=ParseMode.HTML)
         else:
-            # As last resort, send caption-only (TOP text) like /get text mode
+            # As last resort, send caption-only (TOP text) like /get text mode — ensure non-empty
             await msg.reply_text(caption, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
 
     except Exception as e:
