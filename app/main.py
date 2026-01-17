@@ -5,7 +5,7 @@ from telegram.ext import (
 
 from app.config import TELEGRAM_BOT_TOKEN
 from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart, bs, repost
-from app.handlers import top_poster  # NEW
+from app.handlers import flix  # NEW
 from app.state import load_state
 
 
@@ -84,8 +84,8 @@ def main():
     # /rk — caption with quoted Audio block
     app.add_handler(CommandHandler("rk", repost.rk, block=False))
 
-    # NEW: /tp — top caption + TMDB poster from GDFlix/Drive link
-    app.add_handler(CommandHandler("tp", top_poster.tp, block=False))
+    # NEW: /flix — GDFlix + TMDB → TOP caption + poster (or reuse photo)
+    app.add_handler(CommandHandler("flix", flix.flix, block=False))
 
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=False))
