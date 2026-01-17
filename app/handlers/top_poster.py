@@ -123,19 +123,15 @@ async def _resolve_og_title(session: aiohttp.ClientSession, page_url: str) -> Op
 
 def _sanitize_title_from_filename(name: str) -> Tuple[str, Optional[int], Optional[str]]:
     """
-    Try to extract clean title and year from a noisy filename or page title.
+    Extract clean title and year from a noisy filename or page title.
     Also detect 'tv' vs 'movie' heuristically.
     """
     base = name
-    # Replace separators with spaces
     base = re.sub(r"[._]+", " ", base)
-    # Remove brackets content
     base = re.sub(r"\[[^\]]*\]", " ", base)
     base = re.sub(r"\([^\)]*\)", " ", base)
-    # Remove common quality/codec tags
-    common = r"(2160p|1080p|720p|480p|WEB[- ]?DL|WEBRip|BluRay|HDR|DV|HEVC|x265|x264|AV1|ATMOS|DDP|DD|AAC|EAC3|H264|H265)"
+    common = r"(2160p|1080p|720p|480p|WEB[- ]?DL|WEBRip|BluRay|HDR|DV|HEVC|x265|x264|AV1|ATMOS|DDP|DD|AAC|EAC3|H264|H265|REMUX|CAM|TS|HC|Proper|Repack)"
     base = re.sub(rf"\b{common}\b", " ", base, flags=re.IGNORECASE)
-    # Extract year
     year = None
     m = re.search(r"\b(19|20)\d{2}\b", base)
     if m:
@@ -144,11 +140,9 @@ def _sanitize_title_from_filename(name: str) -> Tuple[str, Optional[int], Option
         except Exception:
             year = None
         base = base.replace(m.group(0), " ")
-    # Detect TV patterns
     tv = False
     if re.search(r"\bS\d{1,2}\b", base, flags=re.IGNORECASE) or re.search(r"\bSeason\b", base, flags=re.IGNORECASE):
         tv = True
-    # Collapse spaces and trim
     title = re.sub(r"\s+", " ", base).strip()
     return title, year, ("tv" if tv else None)
 
@@ -264,6 +258,16 @@ async def _tmdb_details(session: aiohttp.ClientSession, tmdb_id: Optional[int], 
     poster_url = _to_absolute_image_url(poster_path) if poster_path else None
     return title, year, poster_url
 
+async def _tmdb_search_multi(session: aiohttp.ClientSession, query: str) -> Optional[Dict[str, Any]]:
+    if not TMDB_API_KEY or not query:
+        return None
+    base = "https://api.themoviedb.org/3"
+    url = f"{base}/search/multi?api_key={TMDB_API_KEY}&language=en-US&query={urllib.parse.quote_plus(query)}"
+    data = await _fetch_json(session, url)
+    if not data or not isinstance(data.get("results"), list) or not data["results"]:
+        return None
+    return data["results"][0]
+
 async def _tmdb_search(session: aiohttp.ClientSession, query: str, year: Optional[int], prefer_type: Optional[str]) -> Tuple[Optional[int], Optional[str], Optional[str], Optional[int], Optional[str]]:
     """
     Search TMDB for a query; return (id, type, title, year, poster_url)
@@ -275,7 +279,27 @@ async def _tmdb_search(session: aiohttp.ClientSession, query: str, year: Optiona
     if prefer_type in types:
         types = [prefer_type] + [t for t in types if t != prefer_type]
 
-    best = (None, None, None, None, None)  # id, type, title, year, poster
+    # Try multi search first
+    m = await _tmdb_search_multi(session, query)
+    if m:
+        mtype = m.get("media_type")
+        if mtype in ("movie", "tv"):
+            tid = m.get("id")
+            title = m.get("title") or m.get("name")
+            dstr = m.get("release_date") if mtype == "movie" else m.get("first_air_date")
+            ryear = None
+            if isinstance(dstr, str) and len(dstr) >= 4:
+                try:
+                    ryear = int(dstr[:4])
+                except Exception:
+                    ryear = None
+            poster_path = m.get("poster_path") or m.get("backdrop_path")
+            poster_url = _to_absolute_image_url(poster_path) if poster_path else None
+            if tid:
+                return tid, mtype, title, ryear, poster_url
+
+    # Fallback search by type
+    best = (None, None, None, None, None)
     for t in types:
         url = f"{base}/search/{t}?api_key={TMDB_API_KEY}&language=en-US&query={urllib.parse.quote_plus(query)}"
         if year and t == "movie":
@@ -283,7 +307,6 @@ async def _tmdb_search(session: aiohttp.ClientSession, query: str, year: Optiona
         data = await _fetch_json(session, url)
         if not data or not isinstance(data.get("results"), list):
             continue
-        # Pick best by closeness to year and popularity
         for res in data["results"]:
             tid = res.get("id")
             if not tid:
@@ -299,29 +322,16 @@ async def _tmdb_search(session: aiohttp.ClientSession, query: str, year: Optiona
             poster_path = res.get("poster_path") or res.get("backdrop_path")
             poster_url = _to_absolute_image_url(poster_path) if poster_path else None
 
-            # Heuristic scoring
-            score = 0
-            if year and ryear:
-                score -= abs(year - ryear)
-            if title and query:
-                # rough title similarity
-                qt = query.lower()
-                tt = title.lower()
-                if qt == tt:
-                    score += 3
-                elif qt in tt or tt in qt:
-                    score += 2
-            popularity = res.get("popularity") or 0
-            score += float(popularity) / 10.0
+            # Simple heuristic: prefer exact/contains match and poster present
+            qt = query.lower()
+            tt = (title or "").lower()
+            good = poster_url and (qt == tt or qt in tt or tt in qt)
+            if good:
+                return tid, t, title, ryear, poster_url
 
-            # Pick first decent candidate
-            if best[0] is None or score > 0:
+            if best[0] is None:
                 best = (tid, t, title, ryear, poster_url)
-                # If poster_url present and title similar, accept quickly
-                if poster_url and (qt == tt or (qt in tt and abs((ryear or 0) - (year or 0)) <= 1)):
-                    return best
 
-        # If we found something in this type, break
         if best[0] is not None:
             break
 
@@ -414,6 +424,21 @@ def _build_caption(title: Optional[str], year: Optional[int], audios: List[Dict[
     caption = _wrap_audio_block_in_blockquote(caption)
     return caption
 
+def _reuse_replied_photo_file_id(update: Update) -> Optional[str]:
+    """
+    If user replied to a message containing a photo, reuse that photo via file_id
+    so we can send caption "on top" like /get.
+    """
+    r = update.message.reply_to_message
+    if not r:
+        return None
+    # Prefer highest resolution photo
+    if r.photo and len(r.photo) > 0:
+        return r.photo[-1].file_id
+    # If original was a document with thumbnail/picture, try thumb (Telegram doesn't allow sending thumb directly)
+    # so only photo file_id is supported here.
+    return None
+
 # ---------- Command ----------
 async def tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -421,7 +446,7 @@ async def tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     - Resolve GDFlix metadata (title, year, audio tracks)
     - Fetch TMDB poster (movie/tv) by tmdb_id if available
     - Fallback: extract title/year from Drive page or filename; search TMDB
-    - Send top caption + poster
+    - Send poster with TOP caption; if poster not found, still send TOP caption (text) or reuse replied photo
     """
     track_user(update.effective_user.id)
     msg = update.message
@@ -458,16 +483,13 @@ async def tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if (not title) or (not poster_url):
             og_title = await _resolve_og_title(session, link)
             candidate_title = og_title or title
-            # If we still don't have a candidate, use last path segment
             if not candidate_title:
                 u = urllib.parse.urlparse(link)
                 candidate_title = (u.path.rsplit("/", 1)[-1] or "").strip()
-
             clean_title, file_year, prefer_type = _sanitize_title_from_filename(candidate_title)
             search_year = year or file_year
             tid, ttype, stitle, syear, sposter = await _tmdb_search(session, clean_title, search_year, prefer_type)
             if tid and ttype:
-                # Update meta from TMDB details to ensure accuracy
                 det_title, det_year, det_poster = await _tmdb_details(session, tid, ttype)
                 title = det_title or stitle or title or clean_title
                 year = det_year or syear or year or file_year
@@ -477,27 +499,35 @@ async def tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not poster_url:
             poster_url = await _resolve_og_image(session, link)
 
+        # Build caption (TOP)
         caption = _build_caption(title, year, audios, update.effective_user.id)
 
-        if not poster_url or not _to_absolute_image_url(poster_url) or not _is_direct_image_link(_to_absolute_image_url(poster_url)):
-            # Poster not found; send text only
-            await status.edit_text(caption or "❌ Poster not found", parse_mode=ParseMode.HTML, disable_web_page_preview=False)
-            return
+        # If we have a poster URL, send photo with caption
+        img_url = _to_absolute_image_url(poster_url) if poster_url else None
+        if img_url and _is_direct_image_link(img_url):
+            img_bytes = await _download_bytes(session, img_url)
+            if img_bytes:
+                from io import BytesIO
+                bio = BytesIO(img_bytes); bio.name = "tmdb_poster.jpg"
+                try:
+                    await status.delete()
+                except Exception:
+                    pass
+                await msg.reply_photo(photo=bio, caption=caption, parse_mode=ParseMode.HTML)
+                return
 
-        # Download and send photo with caption
-        img_url = _to_absolute_image_url(poster_url)
-        img_bytes = await _download_bytes(session, img_url)
-        if not img_bytes:
-            await status.edit_text("❌ Poster download failed", parse_mode=ParseMode.HTML)
-            return
-
-        from io import BytesIO
-        bio = BytesIO(img_bytes); bio.name = "tmdb_poster.jpg"
+        # Poster not resolved or download failed:
+        # Try to reuse replied photo file_id (no download), keeping TOP caption
+        file_id = _reuse_replied_photo_file_id(update)
         try:
             await status.delete()
         except Exception:
             pass
-        await msg.reply_photo(photo=bio, caption=caption, parse_mode=ParseMode.HTML)
+        if file_id:
+            await msg.reply_photo(photo=file_id, caption=caption, parse_mode=ParseMode.HTML)
+        else:
+            # Send caption-only message (TOP content), like /get text mode
+            await msg.reply_text(caption, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
 
     except Exception as e:
         logger.exception("tp failed")
