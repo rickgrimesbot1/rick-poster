@@ -145,7 +145,7 @@ All OTT poster scrap commands are implemented in `app/handlers/streaming.py`. Ea
    </details>
 
 <details>
-<summary><strong>Each command<summary><strong>
+<summary><strong>Each command</strong></summary>
 - Accepts the platform URL (or Netflix ID for /nf)
 - Returns landscape and/or portrait image URLs
 - Sends bold caption with clickable image link
