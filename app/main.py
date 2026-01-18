@@ -4,7 +4,7 @@ from telegram.ext import (
 )
 
 from app.config import TELEGRAM_BOT_TOKEN
-from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart, bs, repost, top_poster
+from app.handlers import start_help, core, streaming, ucer, admin, posters_ui, restart, bs, repost
 from app.state import load_state
 
 
@@ -86,8 +86,7 @@ def main():
 
     # /rk and /tp
     app.add_handler(CommandHandler("rk", repost.rk, block=False))
-    app.add_handler(CommandHandler("tp", top_poster.tp, block=False))
-
+    
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=False))
     app.add_handler(CommandHandler("restart", restart.restart_cmd, block=False))
