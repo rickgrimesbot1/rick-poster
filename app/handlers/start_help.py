@@ -8,16 +8,51 @@ from app.state import track_user
 
 logger = logging.getLogger(__name__)
 
-# ---------- Text builders (ALL BOLD) ----------
+def _maybe_dev_kb():
+    # Only add button if DEV_LINK is a valid http(s) URL
+    if DEV_LINK and DEV_LINK.startswith(("http://", "https://")):
+        return InlineKeyboardMarkup([[InlineKeyboardButton("🤓 Bot Developer", url=DEV_LINK)]])
+    return None
+
+# -------------------- /start (UNCHANGED) --------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user:
+        track_user(update.effective_user.id)
+
+    user = update.effective_user
+    name = html.escape(user.first_name or "User")
+    text = (
+        "<b>── ⋅ ⋅ ── ✩ ── ⋅ ⋅ ──╮</b>\n"
+        "<b>╰┈➤  RICK BOT 🤖</b>\n\n"
+        f"<b>Hello {name}!</b>\n\n"
+        "<b>I am a Google Drive → GDFlix Poster & Audio Info Generator Bot</b>\n\n"
+        "<b>➥ Developed By: @J1_CHANG_WOOK</b>\n"
+        "<b>➥ Details: /help</b>\n\n"
+        "<b>╰── ⋅ ⋅ ── ✩ ── ⋅ ⋅ ──╯</b>"
+    )
+    kb = _maybe_dev_kb()
+
+    if START_PHOTO_URL:
+        try:
+            await update.message.reply_photo(
+                photo=START_PHOTO_URL,
+                caption=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=kb if kb else None,
+            )
+            return
+        except Exception as e:
+            logger.warning(f"/start photo failed: {e}")
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=kb if kb else None,
+    )
+
+# -------------------- Bold text builders --------------------
 def _bold_lines(lines: list[str]) -> str:
     return "\n".join(f"<b>{l}</b>" if l.strip() else "" for l in lines)
-
-def _basic_commands_text() -> str:
-    return _bold_lines([
-        "BASIC COMMANDS",
-        "/start – Show welcome message",
-        "/help – Show this help menu",
-    ])
 
 def _ott_commands_text() -> str:
     return _bold_lines([
@@ -45,6 +80,13 @@ def _gd_commands_text() -> str:
         "• /info – Direct link → TMDB + Audio Info",
         "• /ls – GDrive/Workers → GDFlix + TMDB + Audio Info",
         "• /tmdb – TMDB title/year/poster",
+    ])
+
+def _basic_commands_text() -> str:
+    return _bold_lines([
+        "BASIC COMMANDS",
+        "/start – Show welcome message",
+        "/help – Show this help menu",
     ])
 
 def _ucer_help_text() -> str:
@@ -80,76 +122,22 @@ def _admin_help_text() -> str:
         "• /deny <user_id> – (Owner only) Revoke a user",
     ])
 
-def _main_help_caption(user_first_name: str) -> str:
-    name = html.escape(user_first_name or "User")
-    top = _bold_lines([
-        "── ⋅ ⋅ ── ✩ ── ⋅ ⋅ ──╮",
-        "╰┈➤  RICK BOT 🤖",
-        "",
-        f"Hello {name}!",
-        "",
-        "I am a Google Drive → GDFlix Poster & Audio Info Generator Bot",
-        "",
-        "➥ Developed By: @J1_CHANG_WOOK",
-        "➥ Details: /help",
-        "",
-        "╰── ⋅ ⋅ ── ✩ ── ⋅ ⋅ ──╯",
-        "",
-    ])
-    basic = _basic_commands_text()
-    ott = _ott_commands_text()
-    gd = _gd_commands_text()
-    tail = _bold_lines([
-        "━━━━━━━━━━━━━━━━━━",
-        "➥ Developed By: J1_CHANG_WOOK",
-        "",
-        "▣ Help Section!!",
-        "◉ Check Button For Command",
-        "◉ Need Assistance?",
-        "~ If you are facing any problems, please ask the admin for help.",
-    ])
-    # Compose with spacing between sections
-    return "\n".join([top, basic, "", ott, "", gd, "", tail]).strip()
-
-# ---------- Keyboards ----------
+# -------------------- /help (buttons side-by-side) --------------------
 def _help_keyboard() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton("📺 OTT Commands", callback_data="help:ott")],
-        [InlineKeyboardButton("🗂 GD / Direct Commands", callback_data="help:gd")],
-        [InlineKeyboardButton("🧩 UCER Help", callback_data="help:ucer")],
-        [InlineKeyboardButton("🛡 Admin Help", callback_data="help:admin")],
+        [  # Row 1: side-by-side OTT + GD buttons
+            InlineKeyboardButton("📺 OTT Commands", callback_data="help:ott"),
+            InlineKeyboardButton("🗂 GD / Direct Commands", callback_data="help:gd"),
+        ],
+        [  # Row 2: side-by-side UCER + Admin buttons
+            InlineKeyboardButton("🧩 UCER Help", callback_data="help:ucer"),
+            InlineKeyboardButton("🛡 Admin Help", callback_data="help:admin"),
+        ],
     ]
-    # Optional Developer button (URL)
+    # Optional Developer button on its own row (URL)
     if DEV_LINK and DEV_LINK.startswith(("http://", "https://")):
         rows.append([InlineKeyboardButton("🤓 Bot Developer", url=DEV_LINK)])
     return InlineKeyboardMarkup(rows)
-
-# ---------- Handlers ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user:
-        track_user(update.effective_user.id)
-
-    user = update.effective_user
-    caption = _main_help_caption(user.first_name or "User")
-    kb = _help_keyboard()
-
-    if START_PHOTO_URL:
-        try:
-            await update.message.reply_photo(
-                photo=START_PHOTO_URL,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb,
-            )
-            return
-        except Exception as e:
-            logger.warning(f"/start photo failed: {e}")
-
-    await update.message.reply_text(
-        caption,
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb,
-    )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
@@ -180,13 +168,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb,
     )
 
+# -------------------- /help callbacks: send bold text messages --------------------
 async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Callback for help menu buttons:
-    - help:ott → send OTT commands (bold)
-    - help:gd → send GD/Direct commands (bold)
-    - help:ucer → send UCER text (bold)
-    - help:admin → send Admin help (bold)
+    - help:ott  → send OTT commands (bold)
+    - help:gd   → send GD/Direct commands (bold)
+    - help:ucer → send UCER section (bold)
+    - help:admin→ send Admin commands (bold)
     """
     q = update.callback_query
     if not q:
@@ -213,6 +202,7 @@ async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = _bold_lines(["Unknown selection."])
 
     try:
+        # Send as a separate text message in bold (not editing the photo)
         await chat.send_message(text=text, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.warning(f"help_cb send failed: {e}")
