@@ -19,12 +19,7 @@ from app.utils import (
 
 # ---------- Progress helpers (bold + 10-step bar) ----------
 def _progress_bar(percent: int) -> str:
-    """
-    Return a 10-step bar with filled '▰' and empty '▱' according to percent.
-    10% -> ▰▱▱▱▱▱▱▱▱▱
-    50% -> ▰▰▰▰▰▱▱▱▱▱
-    100% -> ▰▰▰▰▰▰▰▰▰▰
-    """
+    
     p = max(0, min(100, percent))
     filled = p // 10
     return "▰" * filled + "▱" * (10 - filled)
