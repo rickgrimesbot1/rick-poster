@@ -9,12 +9,11 @@ from app.state import track_user
 logger = logging.getLogger(__name__)
 
 def _maybe_dev_kb():
-    # Only add button if DEV_LINK is a valid http(s) URL
     if DEV_LINK and DEV_LINK.startswith(("http://", "https://")):
         return InlineKeyboardMarkup([[InlineKeyboardButton("🤓 Bot Developer", url=DEV_LINK)]])
     return None
 
-# -------------------- /start (UNCHANGED) --------------------
+# /start (unchanged)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
@@ -50,7 +49,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb if kb else None,
     )
 
-# -------------------- Bold text builders --------------------
+# Bold text builders
 def _bold_lines(lines: list[str]) -> str:
     return "\n".join(f"<b>{l}</b>" if l.strip() else "" for l in lines)
 
@@ -80,13 +79,6 @@ def _gd_commands_text() -> str:
         "• /info – Direct link → TMDB + Audio Info",
         "• /ls – GDrive/Workers → GDFlix + TMDB + Audio Info",
         "• /tmdb – TMDB title/year/poster",
-    ])
-
-def _basic_commands_text() -> str:
-    return _bold_lines([
-        "BASIC COMMANDS",
-        "/start – Show welcome message",
-        "/help – Show this help menu",
     ])
 
 def _ucer_help_text() -> str:
@@ -122,19 +114,18 @@ def _admin_help_text() -> str:
         "• /deny <user_id> – (Owner only) Revoke a user",
     ])
 
-# -------------------- /help (buttons side-by-side) --------------------
+# /help keyboard (side-by-side buttons)
 def _help_keyboard() -> InlineKeyboardMarkup:
     rows = [
-        [  # Row 1: side-by-side OTT + GD buttons
+        [
             InlineKeyboardButton("📺 OTT Commands", callback_data="help:ott"),
             InlineKeyboardButton("🗂 GD / Direct Commands", callback_data="help:gd"),
         ],
-        [  # Row 2: side-by-side UCER + Admin buttons
+        [
             InlineKeyboardButton("🧩 UCER Help", callback_data="help:ucer"),
             InlineKeyboardButton("🛡 Admin Help", callback_data="help:admin"),
         ],
     ]
-    # Optional Developer button on its own row (URL)
     if DEV_LINK and DEV_LINK.startswith(("http://", "https://")):
         rows.append([InlineKeyboardButton("🤓 Bot Developer", url=DEV_LINK)])
     return InlineKeyboardMarkup(rows)
@@ -168,24 +159,18 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb,
     )
 
-# -------------------- /help callbacks: send bold text messages --------------------
+# Help callbacks
 async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Callback for help menu buttons:
-    - help:ott  → send OTT commands (bold)
-    - help:gd   → send GD/Direct commands (bold)
-    - help:ucer → send UCER section (bold)
-    - help:admin→ send Admin commands (bold)
-    """
     q = update.callback_query
     if not q:
         return
+    data = q.data or ""
+    logger.info(f"/help callback data={data}")
     try:
-        await q.answer()
+        await q.answer()  # acknowledge to avoid 'loading' spinner
     except Exception:
         pass
 
-    data = q.data or ""
     chat = q.message.chat if q.message else None
     if not chat:
         return
@@ -202,7 +187,6 @@ async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = _bold_lines(["Unknown selection."])
 
     try:
-        # Send as a separate text message in bold (not editing the photo)
         await chat.send_message(text=text, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.warning(f"help_cb send failed: {e}")
