@@ -3,7 +3,7 @@ import logging
 import re
 import urllib.parse
 from io import BytesIO
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any, List
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -258,15 +258,12 @@ def _strip_b_tags(s: str) -> str:
 
 def _wrap_audio_block_in_blockquote(html_caption: str) -> str:
     """
-    Format the 'Audio Tracks:' section exactly as:
-      <blockquote><b>🔈 Audio Tracks:</b>
-        <b>DDP | 5.1 | 640 kb/s | Korean</b>
-        <b>DDP | 5.1 | 640 kb/s | English</b></blockquote>
+    Wrap the 'Audio Tracks:' section as a single blockquote with each line bold,
+    without indent spaces on track lines:
 
-    - Detects the header line case-insensitively, with or without emoji and existing <b> tags.
-    - Wraps the whole audio block into one <blockquote>.
-    - Ensures every line inside blockquote is bold.
-    - Adds 4-space indentation before track lines (not the header).
+    <blockquote><b>🔈 Audio Tracks:</b>
+    <b>DDP | 5.1 | 384 kb/s | Malayalam</b>
+    <b>DDP | 5.1 | 640 kb/s | English</b></blockquote>
     """
     if not html_caption:
         return html_caption
@@ -300,13 +297,13 @@ def _wrap_audio_block_in_blockquote(html_caption: str) -> str:
     header_txt = _strip_b_tags(lines[0])
     header_line = f"<b>{header_txt}</b>"
 
-    # Track lines: strip existing <b>, indent with 4 spaces, re-bold
+    # Track lines: strip existing <b>, re-bold WITHOUT indentation
     track_lines = []
     for ln in lines[1:]:
         t = _strip_b_tags(ln)
         if not t:
             continue
-        track_lines.append(f"    <b>{t}</b>")
+        track_lines.append(f"<b>{t}</b>")
 
     # Build exact blockquote (no trailing newline before closing)
     quoted = "<blockquote>" + header_line
