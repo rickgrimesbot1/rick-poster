@@ -9,7 +9,6 @@ A modular Telegram bot that:
 - Fetches TMDB metadata and posters/backdrops with type and language filters
 - Extracts and formats audio tracks via MediaInfo
 - Ott Poster Scrap
-- Provides owner-only settings and restart controls
 
 <details>
 <summary><strong>Features</strong></summary>
