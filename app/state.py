@@ -4,9 +4,10 @@ import os
 import threading
 import time
 from typing import Dict, Any, Set, List, Optional
+from urllib.parse import urlparse
 
 import requests
-from app.config import STATE_REMOTE_URL as CFG_STATE_REMOTE_URL  # keep your import
+from app.config import STATE_REMOTE_URL as CFG_STATE_REMOTE_URL
 
 logger = logging.getLogger(__name__)
 STATE_FILE = "bot_state.json"
@@ -22,16 +23,38 @@ UCER_SETTINGS: Dict[int, Dict[str, Any]] = {}
 # Pending restart notify target (optional)
 PENDING_RESTART: Optional[Dict[str, Any]] = None
 
-# Remote state config (token and type are optional)
+# Remote state config
 STATE_REMOTE_URL = (CFG_STATE_REMOTE_URL or os.getenv("STATE_REMOTE_URL", "")).strip()
-STATE_REMOTE_TOKEN = os.getenv("STATE_REMOTE_TOKEN", "").strip()  # e.g., JSONBin X-Master-Key
+STATE_REMOTE_TOKEN = os.getenv("STATE_REMOTE_TOKEN", "").strip()  # e.g., JSONBin X-Master-Key or your bearer token
 STATE_REMOTE_TYPE = os.getenv("STATE_REMOTE_TYPE", "").strip().lower()  # "jsonbin" or ""
+# Raw endpoint HTTP method override (POST or PUT). Default: POST.
+STATE_REMOTE_METHOD = (os.getenv("STATE_REMOTE_METHOD", "POST") or "POST").strip().upper()
 
-def track_user(user_id: int):
-    try:
-        BOT_STATS["users"].add(user_id)
-    except Exception:
-        pass
+def _auto_infer_remote_type(url: str) -> str:
+    if not url:
+        return ""
+    host = (urlparse(url).netloc or "").lower()
+    if "jsonbin.io" in host:
+        return "jsonbin"
+    return STATE_REMOTE_TYPE or ""
+
+def _jsonbin_headers(accept_only: bool = False) -> Dict[str, str]:
+    h = {"Accept": "application/json"}
+    if not accept_only:
+        h["Content-Type"] = "application/json"
+    if STATE_REMOTE_TOKEN:
+        h["X-Master-Key"] = STATE_REMOTE_TOKEN
+    return h
+
+def _raw_headers(accept_only: bool = False) -> Dict[str, str]:
+    h = {"Accept": "application/json"}
+    if not accept_only:
+        h["Content-Type"] = "application/json"
+    if STATE_REMOTE_TOKEN:
+        # support both Bearer and X-Token patterns
+        h["Authorization"] = f"Bearer {STATE_REMOTE_TOKEN}"
+        h["X-Token"] = STATE_REMOTE_TOKEN
+    return h
 
 def _apply_state_dict(data: dict):
     global UCER_SETTINGS, ALLOWED_USERS, AUTHORIZED_CHATS, PENDING_RESTART
@@ -69,34 +92,28 @@ def _apply_state_dict(data: dict):
     except Exception as e:
         logger.warning(f"Failed to apply state: {e}")
 
-def _jsonbin_headers(accept_only: bool = False) -> Dict[str, str]:
-    h = {"Accept": "application/json"}
-    if not accept_only:
-        h["Content-Type"] = "application/json"
-    if STATE_REMOTE_TOKEN:
-        h["X-Master-Key"] = STATE_REMOTE_TOKEN
-    return h
+def _jsonbin_get_url(url: str) -> str:
+    url = url.rstrip("/")
+    if not url.endswith("/latest"):
+        url = url + "/latest"
+    return url
 
-def _raw_headers(accept_only: bool = False) -> Dict[str, str]:
-    h = {"Accept": "application/json"}
-    if not accept_only:
-        h["Content-Type"] = "application/json"
-    # Support either Bearer or X-Token; use Bearer if provided
-    if STATE_REMOTE_TOKEN:
-        h["Authorization"] = f"Bearer {STATE_REMOTE_TOKEN}"
-        h["X-Token"] = STATE_REMOTE_TOKEN
-    return h
+def _jsonbin_put_url(url: str) -> str:
+    # PUT goes to base bin URL (no /latest)
+    return url.rstrip("/")
 
 def _load_state_remote() -> bool:
     if not STATE_REMOTE_URL:
+        logger.info("STATE_REMOTE_URL not set; skipping remote load.")
         return False
+    rtype = _auto_infer_remote_type(STATE_REMOTE_URL)
+
     try:
-        # JSONBin: GET /latest with X-Master-Key
-        if STATE_REMOTE_TYPE == "jsonbin":
-            url = STATE_REMOTE_URL.rstrip("/")
-            if not url.endswith("/latest"):
-                url = url + "/latest"
-            r = requests.get(url, headers=_jsonbin_headers(accept_only=True), timeout=12)
+        if rtype == "jsonbin":
+            get_url = _jsonbin_get_url(STATE_REMOTE_URL)
+            logger.info(f"Remote load (JSONBin GET): {get_url}")
+            r = requests.get(get_url, headers=_jsonbin_headers(accept_only=True), timeout=12)
+            logger.info(f"Remote GET status={r.status_code}")
             if r.status_code != 200:
                 logger.warning(f"JSONBin GET failed: HTTP {r.status_code} {r.text[:200]}")
                 return False
@@ -104,27 +121,25 @@ def _load_state_remote() -> bool:
             # JSONBin shape: { record: {...}, metadata: {...} }
             if isinstance(js, dict) and isinstance(js.get("record"), dict):
                 _apply_state_dict(js["record"])
-                logger.info("State loaded from JSONBin.")
                 return True
-            # Fallback: direct dict
             if isinstance(js, dict):
                 _apply_state_dict(js)
-                logger.info("State loaded from JSONBin (raw dict).")
                 return True
-            logger.warning("JSONBin response had unexpected shape.")
+            logger.warning("JSONBin response shape unexpected.")
             return False
 
-        # RAW: simple GET to your endpoint, optional token headers
+        # RAW endpoint
+        logger.info(f"Remote load (RAW GET): {STATE_REMOTE_URL}")
         r = requests.get(STATE_REMOTE_URL, headers=_raw_headers(accept_only=True), timeout=12)
+        logger.info(f"Remote GET status={r.status_code}")
         if r.status_code != 200:
-            logger.warning(f"Remote state GET failed: HTTP {r.status_code} {r.text[:200]}")
+            logger.warning(f"Remote GET failed: HTTP {r.status_code} {r.text[:200]}")
             return False
         js = r.json()
         if not isinstance(js, dict):
             logger.warning("Remote state invalid JSON (expected dict).")
             return False
         _apply_state_dict(js)
-        logger.info("State loaded from remote (raw).")
         return True
 
     except Exception as e:
@@ -133,28 +148,36 @@ def _load_state_remote() -> bool:
 
 def _save_state_remote(data: dict) -> bool:
     if not STATE_REMOTE_URL:
+        logger.info("STATE_REMOTE_URL not set; skipping remote save.")
         return False
+    rtype = _auto_infer_remote_type(STATE_REMOTE_URL)
+
     try:
-        # JSONBin: PUT to base bin URL (not /latest)
-        if STATE_REMOTE_TYPE == "jsonbin":
-            url = STATE_REMOTE_URL.rstrip("/")
-            r = requests.put(url, headers=_jsonbin_headers(), data=json.dumps(data), timeout=15)
+        if rtype == "jsonbin":
+            put_url = _jsonbin_put_url(STATE_REMOTE_URL)
+            logger.info(f"Remote save (JSONBin PUT): {put_url}")
+            r = requests.put(put_url, headers=_jsonbin_headers(), data=json.dumps(data), timeout=15)
+            logger.info(f"Remote PUT status={r.status_code}")
             if r.status_code not in (200, 201):
                 logger.warning(f"JSONBin PUT failed: HTTP {r.status_code} {r.text[:200]}")
                 return False
-            logger.info("State saved to JSONBin.")
             return True
 
-        # RAW: POST JSON to your endpoint (or PUT if your server expects it)
-        r = requests.post(STATE_REMOTE_URL, headers=_raw_headers(), data=json.dumps(data), timeout=12)
+        # RAW endpoint
+        method = STATE_REMOTE_METHOD if STATE_REMOTE_METHOD in ("POST", "PUT") else "POST"
+        logger.info(f"Remote save (RAW {method}): {STATE_REMOTE_URL}")
+        if method == "PUT":
+            r = requests.put(STATE_REMOTE_URL, headers=_raw_headers(), data=json.dumps(data), timeout=12)
+        else:
+            r = requests.post(STATE_REMOTE_URL, headers=_raw_headers(), data=json.dumps(data), timeout=12)
+        logger.info(f"Remote {method} status={r.status_code}")
         if r.status_code not in (200, 201, 204):
-            logger.warning(f"Remote state POST failed: HTTP {r.status_code} {r.text[:200]}")
+            logger.warning(f"Remote state {method} failed: HTTP {r.status_code} {r.text[:200]}")
             return False
-        logger.info("State saved to remote (raw).")
         return True
 
     except Exception as e:
-        logger.warning(f"Remote state POST/PUT error: {e}")
+        logger.warning(f"Remote state {('PUT' if rtype=='jsonbin' else STATE_REMOTE_METHOD)} error: {e}")
         return False
 
 def load_state():
@@ -170,7 +193,6 @@ def load_state():
         logger.warning(f"Failed to load local state: {e}")
 
 def _current_state_dict() -> dict:
-    # Build the serializable dict
     return {
         "ucer_settings": UCER_SETTINGS,
         "allowed_users": ALLOWED_USERS,
