@@ -27,7 +27,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "<b>I am a Google Drive → GDFlix Poster & Audio Info Generator Bot</b>\n\n"
         "<b>➥ Developed By: @J1_CHANG_WOOK</b>\n"
         "<b>➥ Details: /help</b>\n\n"
-        "<b>╰── ⋅ ⋅ ── ✩ ── ⋅ ⋅ ──╯</b>"
+        "<b>╰── ⋅ ⋅ ─ ✩ ── ⋅ ⋅ ─╯</b>"
     )
     kb = _maybe_dev_kb()
 
@@ -49,9 +49,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=kb if kb else None,
     )
 
-# Bold text builders
+# Bold text builders (escape content to avoid HTML parse errors)
 def _bold_lines(lines: list[str]) -> str:
-    return "\n".join(f"<b>{l}</b>" if l.strip() else "" for l in lines)
+    return "\n".join(f"<b>{html.escape(l)}</b>" if l.strip() else "" for l in lines)
 
 def _ott_commands_text() -> str:
     return _bold_lines([
@@ -171,10 +171,6 @@ async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    chat = q.message.chat if q.message else None
-    if not chat:
-        return
-
     if data == "help:ott":
         text = _ott_commands_text()
     elif data == "help:gd":
@@ -187,6 +183,12 @@ async def help_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = _bold_lines(["Unknown selection."])
 
     try:
-        await chat.send_message(text=text, parse_mode=ParseMode.HTML)
+        # Reply in the same chat thread as the button message
+        await q.message.reply_text(text, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.warning(f"help_cb send failed: {e}")
+        # Fallback: send a plain text message without HTML
+        try:
+            await q.message.reply_text(html.unescape(text))
+        except Exception:
+            pass
