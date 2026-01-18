@@ -17,6 +17,22 @@ from app.utils import (
     extract_workers_path, human_readable_size, strip_extension, get_remote_size, download_bytes
 )
 
+# ---------- Progress helpers (bold + 10-step bar) ----------
+def _progress_bar(percent: int) -> str:
+    """
+    Return a 10-step bar with filled '▰' and empty '▱' according to percent.
+    10% -> ▰▱▱▱▱▱▱▱▱▱
+    50% -> ▰▰▰▰▰▱▱▱▱▱
+    100% -> ▰▰▰▰▰▰▰▰▰▰
+    """
+    p = max(0, min(100, percent))
+    filled = p // 10
+    return "▰" * filled + "▱" * (10 - filled)
+
+def _progress_text(percent: int) -> str:
+    return f"<b>Wait :- {percent}%</b>\n<b>{_progress_bar(percent)}</b>"
+
+# ---------- Access helpers ----------
 def is_allowed_user(user_id: int) -> bool:
     if user_id == OWNER_ID:
         return True
@@ -35,6 +51,7 @@ def is_chat_authorized(update: Update) -> bool:
         return chat.id in AUTHORIZED_CHATS
     return is_allowed_user(user.id)
 
+# ---------- Authorization commands ----------
 async def authorize(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
@@ -86,6 +103,7 @@ async def deny_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_state()
     await update.message.reply_text(f"<b>❌ User {uid} access revoked</b>", parse_mode=ParseMode.HTML)
 
+# ---------- Workers helpers ----------
 def _normalize_workers_base(index_url: str) -> str | None:
     import urllib.parse
     if not index_url: return None
@@ -117,6 +135,7 @@ def format_filename(name: str, user_id: int) -> str:
     from app.utils import strip_extension
     return name if full_on else strip_extension(name)
 
+# ---------- /get ----------
 async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
@@ -146,7 +165,7 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Maximum 8 links allowed in one /get.")
         return
 
-    status_msg = await update.message.reply_text("Wait :- 50%\n▰▰▰▰▰▱▱▱▱▱")
+    status_msg = await update.message.reply_text(_progress_text(10), parse_mode=ParseMode.HTML)
 
     try:
         drive_ids = []
@@ -166,6 +185,8 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if wpath and media_source_url is None:
                         media_source_url = wpath
 
+        await status_msg.edit_text(_progress_text(30), parse_mode=ParseMode.HTML)
+
         items = []
         first_name_for_tmdb = None
 
@@ -181,6 +202,8 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             items.append({"id": did, "name": display_name, "size_str": size_str, "size_bytes": size, "link": link})
             if not first_name_for_tmdb:
                 first_name_for_tmdb = raw_name
+
+        await status_msg.edit_text(_progress_text(50), parse_mode=ParseMode.HTML)
 
         if not media_source_url:
             first_drive_id = items[0]["id"] if items else (drive_ids[0] if drive_ids else None)
@@ -198,12 +221,16 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     m = re.search(r"Complete name\s*:\s*(.+)", mi_text)
                     if m: first_name_for_tmdb = m.group(1).strip()
 
+        await status_msg.edit_text(_progress_text(70), parse_mode=ParseMode.HTML)
+
         final_title, final_year, poster_url = "Unknown", "????", None
         if first_name_for_tmdb:
             base_title, file_year = extract_title_year_from_filename(first_name_for_tmdb)
             t_title, t_year, t_lang, poster_url, tmdb_url = strict_match(base_title, file_year)
             final_title = t_title or base_title or "Unknown"
             final_year = t_year or file_year or "????"
+
+        await status_msg.edit_text(_progress_text(90), parse_mode=ParseMode.HTML)
 
         header = f"<b>🎬 {html.escape(final_title)} - ({html.escape(final_year)})</b>"
         lines = [header, ""]
@@ -213,7 +240,6 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append("")
 
         if not items and media_source_url:
-            import urllib.parse
             from app.utils import strip_extension
             fname = urllib.parse.unquote(urllib.parse.urlparse(media_source_url).path.rsplit("/", 1)[-1])
             display_name = strip_extension(fname)
@@ -227,6 +253,8 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(parsed_mediainfo.rstrip())
 
         msg = "\n".join(lines)
+
+        await status_msg.edit_text(_progress_text(100), parse_mode=ParseMode.HTML)
 
         try: await status_msg.delete()
         except Exception: pass
@@ -243,6 +271,7 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception: pass
         await update.message.reply_text(f"⚠️ Something went wrong.\n\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
+# ---------- /info ----------
 async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
@@ -259,9 +288,11 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("No valid link found."); return
     url = urls[0]
 
-    status_msg = await update.message.reply_text("Wait :- 50%\n▰▰▰▰▰▱▱▱▱▱")
+    status_msg = await update.message.reply_text(_progress_text(10), parse_mode=ParseMode.HTML)
     try:
         size_bytes = get_remote_size(url)
+        await status_msg.edit_text(_progress_text(30), parse_mode=ParseMode.HTML)
+
         size_str = human_readable_size(size_bytes) if size_bytes else "Unknown"
         mi_text = get_text_from_url_or_path(url)
         if not mi_text:
@@ -273,12 +304,15 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ucer_audio_fmt = UCER_SETTINGS.get(user.id, {}).get("audio_format", False)
         parsed_mediainfo, org_aud_lang = parse_audio_block(mi_text, ucer_audio_fmt)
 
-        import urllib.parse
+        await status_msg.edit_text(_progress_text(50), parse_mode=ParseMode.HTML)
+
         filename = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]) or "Unknown"
         base_title, file_year = extract_title_year_from_filename(filename)
         tmdb_title, tmdb_year, tmdb_lang_code, poster_url, tmdb_url = strict_match(base_title, file_year)
         final_title = tmdb_title or base_title or "Unknown"
         final_year = tmdb_year or file_year or "????"
+
+        await status_msg.edit_text(_progress_text(90), parse_mode=ParseMode.HTML)
 
         header = f"<b>🎬 {html.escape(final_title)} - ({html.escape(final_year)})</b>"
         lines = [header, "", f"<b>{html.escape(base_title)} [{size_str}]</b>", ""]
@@ -286,6 +320,7 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines.append(parsed_mediainfo.rstrip())
         msg = "\n".join(lines)
 
+        await status_msg.edit_text(_progress_text(100), parse_mode=ParseMode.HTML)
         try: await status_msg.delete()
         except Exception: pass
 
@@ -300,12 +335,13 @@ async def info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception: pass
         await update.message.reply_text(f"⚠️ /info failed.\n\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
+# ---------- /ls ----------
 async def ls_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
     user = update.effective_user
     if not is_chat_authorized(update):
-        await update.message.reply_text("❌ Access denied.\nGroup: need /authorize\nPM: need /allow")
+        await update.message.reply_text("��� Access denied.\nGroup: need /authorize\nPM: need /allow")
         return
     if not context.args:
         await update.message.reply_text("Usage:\n/ls <Google Drive link or workers path>")
@@ -319,7 +355,7 @@ async def ls_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Only Google Drive or workers links are supported for /ls.")
         return
 
-    status_msg = await update.message.reply_text("Wait :- 50%\n▰▰▰▰▰▱▱▱▱▱")
+    status_msg = await update.message.reply_text(_progress_text(10), parse_mode=ParseMode.HTML)
     try:
         drive_id, is_workers_path = None, False
         if is_gdrive_link(url):
@@ -328,6 +364,8 @@ async def ls_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             drive_id = extract_drive_id_from_workers(url)
             if not drive_id and extract_workers_path(url):
                 is_workers_path = True
+
+        await status_msg.edit_text(_progress_text(30), parse_mode=ParseMode.HTML)
 
         if not drive_id and not is_workers_path:
             try: await status_msg.delete()
@@ -348,10 +386,11 @@ async def ls_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gdlink = gdflix.file_link_from_response(gd_res, drive_id)
         else:
             gdlink = url
-            import urllib.parse
             raw_name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1]) or "Unknown"
             display_name = strip_extension(raw_name)
             size = get_remote_size(url) or 0
+
+        await status_msg.edit_text(_progress_text(50), parse_mode=ParseMode.HTML)
 
         media_source_url = workers_link_from_drive_id_for_user(user.id, drive_id) if drive_id else url
         mi_text = get_text_from_url_or_path(media_source_url)
@@ -360,6 +399,8 @@ async def ls_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ucer_audio_fmt = UCER_SETTINGS.get(user.id, {}).get("audio_format", False)
             parsed_mediainfo, org_aud_lang = parse_audio_block(mi_text, ucer_audio_fmt)
 
+        await status_msg.edit_text(_progress_text(70), parse_mode=ParseMode.HTML)
+
         base_title, file_year = extract_title_year_from_filename(raw_name)
         tmdb_title, tmdb_year, tmdb_lang_code, poster_url_unused, tmdb_url = strict_match(base_title, file_year)
         final_title = tmdb_title or base_title or "Unknown"
@@ -367,12 +408,15 @@ async def ls_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         backdrop_url = backdrop_from_tmdb_url(tmdb_url) if tmdb_url else None
 
+        await status_msg.edit_text(_progress_text(90), parse_mode=ParseMode.HTML)
+
         header = f"<b>🎬 {html.escape(final_title)} - ({html.escape(final_year)})</b>"
         lines = [header, "", f"<b>{html.escape(display_name)} [{human_readable_size(size)}]</b>", f"<b>{html.escape(gdlink)}</b>", ""]
         if parsed_mediainfo:
             lines.append(parsed_mediainfo.rstrip())
         msg = "\n".join(lines)
 
+        await status_msg.edit_text(_progress_text(100), parse_mode=ParseMode.HTML)
         try: await status_msg.delete()
         except Exception: pass
 
@@ -387,6 +431,7 @@ async def ls_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception: pass
         await update.message.reply_text(f"⚠️ /ls failed.\n\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
+# ---------- /tmdb ----------
 async def tmdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
@@ -398,16 +443,23 @@ async def tmdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tmdb_title = None
     tmdb_year = "????"
     try:
+        status_msg = await update.message.reply_text(_progress_text(10), parse_mode=ParseMode.HTML)
+
         if raw.startswith("http") and "themoviedb.org" in raw:
             import re, requests
             from app.config import TMDB_API_KEY
             m = re.search(r"themoviedb\.org/(movie|tv)/(\d+)", raw)
             if not m:
+                try: await status_msg.delete()
+                except Exception: pass
                 await update.message.reply_text("Invalid TMDB URL."); return
             ctype, tmdb_id = m.group(1), m.group(2)
             api_url = f"https://api.themoviedb.org/3/{ctype}/{tmdb_id}"
             r = requests.get(api_url, params={"api_key": TMDB_API_KEY}, timeout=10)
+            await status_msg.edit_text(_progress_text(50), parse_mode=ParseMode.HTML)
             if r.status_code != 200:
+                try: await status_msg.delete()
+                except Exception: pass
                 await update.message.reply_text(f"TMDB error: HTTP {r.status_code}")
                 return
             data = r.json()
@@ -426,8 +478,13 @@ async def tmdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 year = "????"
             t_title, t_year, t_lang, poster_url, tmdb_url = strict_match(title, year)
+            await status_msg.edit_text(_progress_text(70), parse_mode=ParseMode.HTML)
             tmdb_title = t_title or title or "Unknown"
             tmdb_year = t_year or year or "????"
+
+        await status_msg.edit_text(_progress_text(100), parse_mode=ParseMode.HTML)
+        try: await status_msg.delete()
+        except Exception: pass
 
         header = f"<b>🎬 {html.escape(tmdb_title)} - ({html.escape(tmdb_year)})</b>"
         poster_bytes = download_bytes(poster_url) if poster_url else None
@@ -439,6 +496,7 @@ async def tmdb_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ TMDB lookup failed.\n\n<code>{html.escape(str(e))}</code>", parse_mode=ParseMode.HTML)
 
+# ---------- Manual poster ----------
 async def manual_poster(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user:
         track_user(update.effective_user.id)
