@@ -7,7 +7,6 @@ from typing import Dict, Any, Set, List, Optional
 from urllib.parse import urlparse
 
 import requests
-from app.config import STATE_REMOTE_URL as CFG_STATE_REMOTE_URL
 
 logger = logging.getLogger(__name__)
 STATE_FILE = "bot_state.json"
@@ -23,12 +22,17 @@ UCER_SETTINGS: Dict[int, Dict[str, Any]] = {}
 # Pending restart notify target (optional)
 PENDING_RESTART: Optional[Dict[str, Any]] = None
 
-# Remote state config
-STATE_REMOTE_URL = (CFG_STATE_REMOTE_URL or os.getenv("STATE_REMOTE_URL", "")).strip()
+# Read remote config directly from environment to avoid import-time cycles
+STATE_REMOTE_URL = os.getenv("STATE_REMOTE_URL", "").strip()
 STATE_REMOTE_TOKEN = os.getenv("STATE_REMOTE_TOKEN", "").strip()  # e.g., JSONBin X-Master-Key or your bearer token
 STATE_REMOTE_TYPE = os.getenv("STATE_REMOTE_TYPE", "").strip().lower()  # "jsonbin" or ""
-# Raw endpoint HTTP method override (POST or PUT). Default: POST.
-STATE_REMOTE_METHOD = (os.getenv("STATE_REMOTE_METHOD", "POST") or "POST").strip().upper()
+STATE_REMOTE_METHOD = (os.getenv("STATE_REMOTE_METHOD", "POST") or "POST").strip().upper()  # for raw endpoints
+
+def track_user(user_id: int):
+    try:
+        BOT_STATS["users"].add(user_id)
+    except Exception:
+        pass
 
 def _auto_infer_remote_type(url: str) -> str:
     if not url:
@@ -163,7 +167,7 @@ def _save_state_remote(data: dict) -> bool:
                 return False
             return True
 
-        # RAW endpoint
+        # RAW endpoint (POST or PUT)
         method = STATE_REMOTE_METHOD if STATE_REMOTE_METHOD in ("POST", "PUT") else "POST"
         logger.info(f"Remote save (RAW {method}): {STATE_REMOTE_URL}")
         if method == "PUT":
