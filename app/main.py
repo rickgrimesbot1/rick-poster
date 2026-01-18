@@ -15,6 +15,41 @@ def setup_logging():
     )
 
 
+async def callback_router(update, context):
+    """
+    Catch-all router for inline keyboard callbacks.
+    Ensures UCER buttons (and others) always work even if a pattern doesn't match.
+    """
+    q = update.callback_query
+    if not q:
+        return
+    data = (q.data or "").strip()
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
+    # Route by prefix
+    if data.startswith("help:"):
+        return await start_help.help_cb(update, context)
+    if data.startswith("ucer:"):
+        return await ucer.ucer_cb(update, context)
+    if data.startswith("admin:"):
+        return await admin.admin_cb(update, context)
+    if data.startswith("poster:"):
+        return await posters_ui.posters_cb(update, context)
+    if data.startswith("bs:"):
+        return await bs.bs_cb(update, context)
+    if data.startswith("restart:"):
+        return await restart.restart_cb(update, context)
+
+    # Fallback: inform unknown callback
+    try:
+        await q.message.reply_text(f"Unknown action: {data}")
+    except Exception:
+        pass
+
+
 def main():
     setup_logging()
     load_state()
@@ -28,10 +63,9 @@ def main():
     # Basic
     app.add_handler(CommandHandler("start", start_help.start, block=False))
     app.add_handler(CommandHandler("help", start_help.help_cmd, block=False))
-    # IMPORTANT: register the help callback handler
-    app.add_handler(CallbackQueryHandler(start_help.help_cb, pattern=r"^help:", block=False))
-    # Optional: catch-all to ensure callbacks are handled even if pattern mismatches
-    app.add_handler(CallbackQueryHandler(start_help.help_cb, block=False))
+
+    # Single catch-all callback router (handles help:, ucer:, admin:, bs:, poster:, restart:)
+    app.add_handler(CallbackQueryHandler(callback_router, block=False))
 
     # Access control
     app.add_handler(CommandHandler("authorize", core.authorize, block=False))
@@ -47,12 +81,10 @@ def main():
 
     # UCER settings
     app.add_handler(CommandHandler("ucer", ucer.ucer_cmd, block=False))
-    app.add_handler(CallbackQueryHandler(ucer.ucer_cb, pattern="^ucer:", block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ucer.ucer_text))
 
     # Admin panel
     app.add_handler(CommandHandler("admin", admin.admin_cmd, block=False))
-    app.add_handler(CallbackQueryHandler(admin.admin_cb, pattern="^admin:", block=False))
 
     # Streaming posters
     app.add_handler(CommandHandler("amzn", streaming.amzn, block=False))
@@ -77,11 +109,9 @@ def main():
 
     # Posters UI
     app.add_handler(CommandHandler("posters", posters_ui.posters_command, block=False))
-    app.add_handler(CallbackQueryHandler(posters_ui.posters_cb, pattern="^poster:", block=False))
 
     # Bot settings (/bs)
     app.add_handler(CommandHandler("bs", bs.bs_cmd, block=False))
-    app.add_handler(CallbackQueryHandler(bs.bs_cb, pattern="^bs:", block=False))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bs.bs_text))
 
     # /rk and /tp
@@ -90,7 +120,6 @@ def main():
     # Restart (owner) and whoami
     app.add_handler(CommandHandler("whoami", restart.whoami, block=False))
     app.add_handler(CommandHandler("restart", restart.restart_cmd, block=False))
-    app.add_handler(CallbackQueryHandler(restart.restart_cb, pattern="^restart:", block=False))
 
     print("Bot running...")
     app.run_polling(drop_pending_updates=True)
