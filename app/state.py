@@ -22,11 +22,15 @@ UCER_SETTINGS: Dict[int, Dict[str, Any]] = {}
 # Pending restart notify target (optional)
 PENDING_RESTART: Optional[Dict[str, Any]] = None
 
-# Read remote config directly from environment to avoid import-time cycles
+# Remote state config (Heroku Config Vars)
 STATE_REMOTE_URL = os.getenv("STATE_REMOTE_URL", "").strip()
 STATE_REMOTE_TOKEN = os.getenv("STATE_REMOTE_TOKEN", "").strip()  # e.g., JSONBin X-Master-Key or your bearer token
 STATE_REMOTE_TYPE = os.getenv("STATE_REMOTE_TYPE", "").strip().lower()  # "jsonbin" or ""
 STATE_REMOTE_METHOD = (os.getenv("STATE_REMOTE_METHOD", "POST") or "POST").strip().upper()  # for raw endpoints
+
+# Bootstrap lists from env (comma-separated integers)
+ALLOWED_USERS_INIT = os.getenv("ALLOWED_USERS_INIT", "").strip()
+AUTHORIZED_CHATS_INIT = os.getenv("AUTHORIZED_CHATS_INIT", "").strip()
 
 def track_user(user_id: int):
     try:
@@ -55,7 +59,6 @@ def _raw_headers(accept_only: bool = False) -> Dict[str, str]:
     if not accept_only:
         h["Content-Type"] = "application/json"
     if STATE_REMOTE_TOKEN:
-        # support both Bearer and X-Token patterns
         h["Authorization"] = f"Bearer {STATE_REMOTE_TOKEN}"
         h["X-Token"] = STATE_REMOTE_TOKEN
     return h
@@ -181,20 +184,8 @@ def _save_state_remote(data: dict) -> bool:
         return True
 
     except Exception as e:
-        logger.warning(f"Remote state {('PUT' if rtype=='jsonbin' else STATE_REMOTE_METHOD)} error: {e}")
+        logger.warning(f"Remote state save error: {e}")
         return False
-
-def load_state():
-    if _load_state_remote():
-        return
-    try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            _apply_state_dict(data)
-            logger.info("State loaded from local file.")
-    except Exception as e:
-        logger.warning(f"Failed to load local state: {e}")
 
 def _current_state_dict() -> dict:
     return {
@@ -204,11 +195,48 @@ def _current_state_dict() -> dict:
         "pending_restart": PENDING_RESTART,
     }
 
+def _bootstrap_from_env():
+    # Only apply if current lists are empty
+    global ALLOWED_USERS, AUTHORIZED_CHATS
+    if ALLOWED_USERS_INIT and not ALLOWED_USERS:
+        try:
+            ALLOWED_USERS = [int(x.strip()) for x in ALLOWED_USERS_INIT.split(",") if x.strip()]
+            logger.info(f"Bootstrapped ALLOWED_USERS from env: {ALLOWED_USERS}")
+        except Exception as e:
+            logger.warning(f"ALLOWED_USERS_INIT parse failed: {e}")
+    if AUTHORIZED_CHATS_INIT and not AUTHORIZED_CHATS:
+        try:
+            AUTHORIZED_CHATS = set(int(x.strip()) for x in AUTHORIZED_CHATS_INIT.split(",") if x.strip())
+            logger.info(f"Bootstrapped AUTHORIZED_CHATS from env: {AUTHORIZED_CHATS}")
+        except Exception as e:
+            logger.warning(f"AUTHORIZED_CHATS_INIT parse failed: {e}")
+
+def load_state():
+    # Try remote first
+    if _load_state_remote():
+        return
+    # If remote failed, try local file
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            _apply_state_dict(data)
+            logger.info("State loaded from local file.")
+        else:
+            logger.info("Local state file not found; bootstrapping from env.")
+            _bootstrap_from_env()
+            # Save immediately so remote/local gets initialized
+            save_state()
+    except Exception as e:
+        logger.warning(f"Failed to load local state: {e}")
+        _bootstrap_from_env()
+        save_state()
+
 def save_state():
     try:
         with _state_lock:
             data = _current_state_dict()
-            # Save local
+            # Save local (note: Heroku clears filesystem on restart)
             try:
                 with open(STATE_FILE, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
